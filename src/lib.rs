@@ -4,6 +4,10 @@
 
 // TODO(cgaebel): Security audit, remove as much unsafety as possible, etc.
 
+// TODO(cgaebel): This does a LOT of memmove instead of memcpy out of necessity,
+// so that we can use realloc. It might be better to just suck it up and
+// malloc the new buffer, memcpy, then free the old buffer.
+
 // TODO(cgaebel): Ideally we'd use allocators instead of the `alloc` library
 // directly.
 extern crate alloc;

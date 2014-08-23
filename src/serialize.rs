@@ -62,6 +62,9 @@ unsafe fn my_call_once<F: FnOnce<(), ()>>(
   Stop
 }
 
+/// A struct which can fully encode an unboxed closure -- both the code pointer
+/// and the data itself.
+///
 /// The length and code pointers are not serialized. If you want them, pack it
 /// in yourself. This will only serialize the closure's data payload.
 pub trait Serializer {
