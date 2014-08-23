@@ -180,6 +180,15 @@ impl CloQ {
         self.buf.offset(self.fst as int),
         self.buf.offset(old_fst as int) as *const u8,
         rhs_len);
+    } else {
+      // Shuffle all the elements down to the beginning, so we can shrink off of
+      // the back. There may be overlap here, so unfortunately we have to
+      // memmove.
+      copy_memory(
+        self.buf,
+        self.buf.offset(self.fst as int) as *const u8,
+        self.len);
+      self.fst = 0;
     }
     self.buf = reallocate(self.buf, target_size, align(), self.cap());
     self.msk = target_size - 1;
@@ -290,9 +299,7 @@ impl CloQ {
       };
 
     let code_ptr = read_imm::<*mut ()>(mem::transmute(code_ptr_slice));
-    println!("[pop] code_ptr={}", code_ptr);
     let len  = read_imm::<uint>(mem::transmute(len_slice));
-    println!("[pop] len={}", code_ptr);
 
     let data_slice: raw::Slice<u8> =
       raw::Slice {
@@ -369,8 +376,8 @@ impl CloQ {
     let (code_dst, rest    ) = dst.mut_split_at(ptr_size());
     let (len_dst,  data_dst) = rest.mut_split_at(len_size());
 
-    serialize_imm(code_dst, &code_ptr);
-    serialize_imm(len_dst,  &len);
+    serialize_imm(code_dst, code_ptr);
+    serialize_imm(len_dst,  len);
 
     data_dst
   }
@@ -379,9 +386,7 @@ impl CloQ {
   pub fn push<S: Serializer>(&mut self, s: S) {
     unsafe {
       let code_ptr = s.code_ptr();
-      println!("[push] code_ptr={}", code_ptr);
       let len      = round_up_to_next(s.required_len(), align());
-      println!("[push] len={}", len);
       s.serialize_data(self.reserve(code_ptr, len));
     }
   }
@@ -467,7 +472,6 @@ mod test {
 
   #[test]
   fn add_and_run_some_closures() {
-    println!("t1");
     let k: Rc<RefCell<int>> = Rc::new(RefCell::new(0));
     let k1 = k.clone();
     let k2 = k.clone();
@@ -497,30 +501,21 @@ mod test {
     });
 
     assert_eq!(*k.borrow(), 0);
-    println!("pop_and_run 1");
     assert!(cq.try_pop_and_run());
-    println!("pop_and_run 2");
     assert_eq!(*k.borrow(), 1);
     assert!(cq.try_pop_and_run());
-    println!("pop_and_run 3");
     assert_eq!(*k.borrow(), 2);
     assert!(cq.try_pop_and_run());
-    println!("pop_and_run 4");
     assert_eq!(*k.borrow(), 3);
     assert!(cq.try_pop_and_run());
-    println!("pop_and_run 5");
     assert_eq!(*k.borrow(), 1);
     assert!(cq.try_pop_and_run());
-    println!("pop_and_run 6");
     assert_eq!(*k.borrow(), 1);
     assert!(!cq.try_pop_and_run());
-    println!("pop_and_run 7");
   }
 
-  /*
   #[test]
   fn leave_a_closure_behind() {
-    println!("t2");
     let k: Rc<int> = Rc::new(3);
 
     let mut cq = CloQ::new();
@@ -530,5 +525,4 @@ mod test {
       Stop
     });
   }
-  */
 }

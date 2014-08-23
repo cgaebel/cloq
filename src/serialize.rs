@@ -9,8 +9,6 @@ use super::{StopCondition,Stop,KeepGoing};
 /// If you want to avoid the call and just do the drop, set `just_drop` to true.
 unsafe fn my_call_fn<F: Fn<(), StopCondition>>(
     x: *mut F, just_drop: bool) -> StopCondition {
-  println!("just_drop = {}", just_drop);
-
   if just_drop {
     ptr::read(x as *const F);
     return Stop;
