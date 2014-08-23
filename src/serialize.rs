@@ -1,12 +1,20 @@
 //! Closure serialization.
-use std::mem;
-use std::ptr;
-use std::raw;
+use core::mem;
+use core::ptr;
+use core::raw;
 
 use super::{StopCondition,Stop,KeepGoing};
 
 /// Calls the function, and drops it if it's time to stop.
-unsafe fn my_call_fn<F: Fn<(), StopCondition>>(x: *mut F) -> StopCondition {
+/// If you want to avoid the call and just do the drop, set `just_drop` to true.
+unsafe fn my_call_fn<F: Fn<(), StopCondition>>(
+    x: *mut F, just_drop: bool) -> StopCondition {
+
+  if just_drop {
+    ptr::read(x as *const F);
+    return Stop;
+  }
+
   let mut_ref: &mut F = mem::transmute(x);
   let r = mut_ref.call(());
 
@@ -19,7 +27,15 @@ unsafe fn my_call_fn<F: Fn<(), StopCondition>>(x: *mut F) -> StopCondition {
 }
 
 /// Calls the function, and drops it if it's time to stop.
-unsafe fn my_call_mut<F: FnMut<(), StopCondition>>(x: *mut F) -> StopCondition {
+///
+/// If you want to avoid the call and just do the drop, set `just_drop` to true.
+unsafe fn my_call_mut<F: FnMut<(), StopCondition>>(
+    x: *mut F, just_drop: bool) -> StopCondition {
+  if just_drop {
+    ptr::read(x as *const F);
+    return Stop;
+  }
+
   let mut_ref: &mut F = mem::transmute(x);
   let r = mut_ref.call_mut(());
 
@@ -33,8 +49,16 @@ unsafe fn my_call_mut<F: FnMut<(), StopCondition>>(x: *mut F) -> StopCondition {
 
 /// Calls a `FnOnce` closure, and drops it when done.
 ///
+/// If you want to avoid the call and just do the drop, set `just_drop` to true.
+///
 /// `Stop` is always returned, since a `FnOnce` closure may only be called once.
-unsafe fn my_call_once<F: FnOnce<(), ()>>(x: *mut F)  -> StopCondition {
+unsafe fn my_call_once<F: FnOnce<(), ()>>(
+    x: *mut F, just_drop: bool)  -> StopCondition {
+  if just_drop {
+    ptr::read(x as *const F);
+    return Stop;
+  }
+
   ptr::read(x as *const F).call_once(());
   Stop
 }
@@ -61,24 +85,20 @@ pub struct FnSerializer<F> {
 
 impl<F: Fn<(), StopCondition>> FnSerializer<F> {
   /// Creates a new FnSerializer, taking ownership of the `Fn`.
-  #[inline]
   pub fn new(f: F) -> FnSerializer<F> {
     FnSerializer { f: f }
   }
 }
 
 impl<F: Fn<(), StopCondition>> Serializer for FnSerializer<F> {
-  #[inline]
   fn required_len(&self) -> uint {
     mem::size_of::<F>()
   }
 
-  #[inline]
   unsafe fn code_ptr(&self) -> *mut () {
     mem::transmute(my_call_fn::<F>)
   }
 
-  #[inline]
   unsafe fn serialize_data(self, dst: &mut [u8]) {
     let len = self.required_len();
     assert!(len <= dst.len());
@@ -96,11 +116,14 @@ impl<F: Fn<(), StopCondition>> Serializer for FnSerializer<F> {
 
 /// Calls a serialized closure, as long as you have the data and code pointers
 /// from a `Serializer`.
-#[inline]
-pub unsafe fn call(data: *mut (), code: *mut ()) -> StopCondition {
-  let f: fn(*mut ()) -> StopCondition =
+///
+/// Set `just_drop` to true if you want to avoid the call, and just drop the
+/// closure.
+pub unsafe fn call(
+    data: *mut (), code: *mut (), just_drop: bool) -> StopCondition {
+  let f: fn(*mut (), bool) -> StopCondition =
     mem::transmute(code);
-  f(data)
+  f(data, just_drop)
 }
 
 /// A simple wrapper class used to serialize unboxed closures of type `FnMut`.
@@ -110,24 +133,20 @@ pub struct FnMutSerializer<F> {
 
 impl<F: FnMut<(), StopCondition>> FnMutSerializer<F> {
   /// Creates a new `FnMutSerializer`, taking ownership of the `FnMut`.
-  #[inline]
   pub fn new(f: F) -> FnMutSerializer<F> {
     FnMutSerializer { f: f }
   }
 }
 
 impl<F: FnMut<(), StopCondition>> Serializer for FnMutSerializer<F> {
-  #[inline]
   fn required_len(&self) -> uint {
     mem::size_of::<F>()
   }
 
-  #[inline]
   unsafe fn code_ptr(&self) -> *mut () {
     mem::transmute(my_call_mut::<F>)
   }
 
-  #[inline]
   unsafe fn serialize_data(self, dst: &mut [u8]) {
     let len = self.required_len();
     assert!(len <= dst.len());
@@ -149,7 +168,6 @@ pub struct FnOnceSerializer<F> {
 }
 
 impl<F: FnOnce<(), ()>> FnOnceSerializer<F> {
-  #[inline]
   /// Creates a new `FnOnceSerializer`, taking ownership of the `FnMut`.
   pub fn new(f: F) -> FnOnceSerializer<F> {
     FnOnceSerializer { f: f }
@@ -157,17 +175,14 @@ impl<F: FnOnce<(), ()>> FnOnceSerializer<F> {
 }
 
 impl<F: FnOnce<(), ()>> Serializer for FnOnceSerializer<F> {
-  #[inline]
   fn required_len(&self) -> uint {
     mem::size_of::<F>()
   }
 
-  #[inline]
   unsafe fn code_ptr(&self) -> *mut () {
     mem::transmute(my_call_once::<F>)
   }
 
-  #[inline]
   unsafe fn serialize_data(self, dst: &mut [u8]) {
     let len = self.required_len();
     assert!(len <= dst.len());
@@ -202,7 +217,7 @@ fn serialize_a_function() {
     s.serialize_data(buf.as_mut_slice());
     let buf_slice: raw::Slice<u8> = mem::transmute(buf.as_mut_slice());
 
-    let r = call(mem::transmute(buf_slice.data), code_ptr);
+    let r = call(mem::transmute(buf_slice.data), code_ptr, false);
 
     assert_eq!(r, Stop);
   }

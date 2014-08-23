@@ -3,4 +3,3 @@
 name = "cloq"
 version = "0.0.1"
 authors = ["Clark Gaebel <cg.wowus.cg@gmail.com>"]
-test = true
