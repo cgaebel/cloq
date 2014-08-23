@@ -9,6 +9,7 @@ use super::{StopCondition,Stop,KeepGoing};
 /// If you want to avoid the call and just do the drop, set `just_drop` to true.
 unsafe fn my_call_fn<F: Fn<(), StopCondition>>(
     x: *mut F, just_drop: bool) -> StopCondition {
+  println!("just_drop = {}", just_drop);
 
   if just_drop {
     ptr::read(x as *const F);
@@ -101,7 +102,6 @@ impl<F: Fn<(), StopCondition>> Serializer for FnSerializer<F> {
 
   unsafe fn serialize_data(self, dst: &mut [u8]) {
     let len = self.required_len();
-    assert!(len <= dst.len());
 
     let slice_of_self: raw::Slice<u8> =
       raw::Slice {

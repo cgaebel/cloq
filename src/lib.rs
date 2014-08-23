@@ -2,12 +2,14 @@
 #![feature(unboxed_closures)]
 #![deny(missing_doc)]
 
-// TODO(cgaebel): Remove this. This is just for while I'm building the damn
-// thing.
 #![allow(dead_code)]
+#![allow(unused_imports)]
+#![allow(unused_variable)]
 
 // TODO(cgaebel): Protect against integer overflow leading to heap corruption.
+// TODO(cgaebel): Security audit, remove as much unsafety as possible, etc.
 
+// Ideally we'd use allocators instead of the `alloc` library directly.
 extern crate alloc;
 extern crate core;
 
@@ -97,11 +99,12 @@ fn test_rounding() {
 /// The only allocations performed by this module are those required to keep
 /// the underlying buffer appropriately sized, and there is no dependency on
 /// libstd.
+#[unsafe_no_drop_flag]
 pub struct CloQ {
-  buf: *mut u8,
-  msk: uint, // capacity (power of two) - 1
-  len: uint,
-  fst: uint, // the index of the first element (next to pop).
+  buf: *mut u8, // raw data storage
+  msk: uint,   // capacity (power of two) - 1
+  len: uint,   // number of valid bytes in the buffer
+  fst: uint,   // index of the first element (next to pop)
 }
 
 /// The default bytesize of the buffer.
@@ -110,11 +113,13 @@ static DEFAULT_SIZE: uint = 64;
 impl CloQ {
   /// Creates a new `CloQ`.
   pub fn new() -> CloQ {
-    CloQ {
-      buf: allocate(DEFAULT_SIZE, align()),
-      msk: DEFAULT_SIZE - 1,
-      len: 0,
-      fst: 0,
+    unsafe {
+      CloQ {
+        buf: allocate(DEFAULT_SIZE, align()),
+        msk: DEFAULT_SIZE - 1,
+        len: 0,
+        fst: 0,
+      }
     }
   }
 
@@ -227,7 +232,8 @@ impl CloQ {
   /// Allocate space for at least num_bytes, returning a slice to the allocated,
   /// contiguous space.
   unsafe fn reserve_bytes(&mut self, num_bytes: uint) -> &mut [u8] {
-    self.grow_to_fit(self.len + num_bytes);
+    let new_len = self.len + num_bytes;
+    self.grow_to_fit(new_len);
     // If we don't wrap around, but this push will force a wrap around, shuffle
     // the elements right until they hit the right hand wall, then return a
     // slice to the start. This ensures that we don't have a random hole that
@@ -238,8 +244,8 @@ impl CloQ {
       // slice this is the push that will cause the buffer to wrap, the new
       // elements go at the very front.
       let slice: raw::Slice<u8> =
-        Slice {
-          data: self.buf,
+        raw::Slice {
+          data: self.buf as *const u8,
           len:  num_bytes,
         };
       self.len += num_bytes;
@@ -252,9 +258,11 @@ impl CloQ {
     // 1) There's enough space in the queue for the new bytes (grow_to_fit).
     // 2) There's no random unused bytes at the end of the buffer (pack_rhs).
 
+    let raw_data_ptr = self.buf.offset(self.mask(self.fst + self.len) as int);
+
     let slice: raw::Slice<u8> =
-      Slice {
-        data: self.buf.offset(self.mask(self.fst + self.len) as int),
+      raw::Slice {
+        data: raw_data_ptr as *const u8,
         len:  num_bytes,
       };
     self.len += num_bytes;
@@ -267,30 +275,32 @@ impl CloQ {
     if self.len == 0 { return None; }
 
     let raw_code_ptr = self.buf.offset(self.fst as int);
-    let raw_len_ptr  = raw_code_ptr.offest(ptr_size() as int);
+    let raw_len_ptr  = raw_code_ptr.offset(ptr_size() as int);
     let raw_data_ptr = raw_len_ptr.offset(len_size() as int);
 
     let code_ptr_slice: raw::Slice<u8> =
       raw::Slice {
-        data: raw_code_ptr,
+        data: raw_code_ptr as *const u8,
         len:  ptr_size(),
       };
     let len_slice: raw::Slice<u8> =
       raw::Slice {
-        data: raw_len_ptr,
+        data: raw_len_ptr as *const u8,
         len:  len_size(),
       };
 
     let code_ptr = read_imm::<*mut ()>(mem::transmute(code_ptr_slice));
+    println!("[pop] code_ptr={}", code_ptr);
     let len  = read_imm::<uint>(mem::transmute(len_slice));
+    println!("[pop] len={}", code_ptr);
 
     let data_slice: raw::Slice<u8> =
       raw::Slice {
-        data: raw_data_ptr,
+        data: raw_data_ptr as *const u8,
         len:  len,
       };
 
-    Some(code_ptr, mem::transmute(data_slice))
+    Some((code_ptr, mem::transmute(data_slice)))
   }
 
   // The below two functions take the length of the closure at the head to avoid
@@ -309,7 +319,8 @@ impl CloQ {
     self.len -= byte_len;
 
     if shrink {
-      self.shrink_to_fit(self.len);
+      let new_len = self.len;
+      self.shrink_to_fit(new_len);
     }
   }
 
@@ -328,7 +339,7 @@ impl CloQ {
     // copying to and from the same location!
     copy_memory(
       self.buf.offset(self.mask(self.fst + self.len) as int),
-      self.buf.offset(self.fst as int),
+      self.buf.offset(self.fst as int) as *const u8,
       byte_len);
     self.fst = self.mask(self.fst + byte_len);
   }
@@ -342,7 +353,7 @@ impl CloQ {
     let raw_data_ptr = self.buf.offset((self.fst + ptr_size() + len_size()) as int);
     let call_ptr_slice: raw::Slice<u8> =
       raw::Slice {
-        data: raw_call_ptr,
+        data: raw_call_ptr as *const u8,
         len:  ptr_size(),
       };
     let code_ptr = read_imm::<*mut ()>(mem::transmute(call_ptr_slice));
@@ -355,8 +366,8 @@ impl CloQ {
   unsafe fn reserve(&mut self, code_ptr: *mut (), len: uint) -> &mut [u8] {
     let dst = self.reserve_bytes(byte_len(len));
 
-    let (code_dst, rest    ) = dst.mut_split_at(ptr_size);
-    let (len_dst,  data_dst) = rest.mut_split_at(len_size);
+    let (code_dst, rest    ) = dst.mut_split_at(ptr_size());
+    let (len_dst,  data_dst) = rest.mut_split_at(len_size());
 
     serialize_imm(code_dst, &code_ptr);
     serialize_imm(len_dst,  &len);
@@ -368,7 +379,9 @@ impl CloQ {
   pub fn push<S: Serializer>(&mut self, s: S) {
     unsafe {
       let code_ptr = s.code_ptr();
+      println!("[push] code_ptr={}", code_ptr);
       let len      = round_up_to_next(s.required_len(), align());
+      println!("[push] len={}", len);
       s.serialize_data(self.reserve(code_ptr, len));
     }
   }
@@ -399,12 +412,14 @@ impl CloQ {
             Some(x) => x,
           };
 
+        let data_len = data_src.len();
+
         let data_ptr: *mut () = {
           let data_slice: raw::Slice<u8> = mem::transmute(data_src);
           mem::transmute(data_slice.data)
         };
 
-        (call(data_ptr, code_ptr, false), data_src.len())
+        (call(data_ptr, code_ptr, false), data_len)
       };
 
       match call_result {
@@ -414,6 +429,11 @@ impl CloQ {
 
       true
     }
+  }
+
+  /// Is the queue empty?
+  pub fn is_empty(&self) -> bool {
+    self.len == 0
   }
 }
 
@@ -430,7 +450,85 @@ impl Drop for CloQ {
         self.pop_head(len, false);
       }
 
-      deallocate(self.buf, self.cap(), align());
+      // Need to null check since we don't have a drop flag, and drop may be
+      // called multiple times, but will zero the structure when it's done.
+      if !self.buf.is_null() {
+        deallocate(self.buf, self.cap(), align());
+      }
     }
   }
+}
+
+#[cfg(test)]
+mod test {
+  use super::{CloQ,StopCondition,Stop,KeepGoing};
+  use std::cell::RefCell;
+  use std::rc::Rc;
+
+  #[test]
+  fn add_and_run_some_closures() {
+    println!("t1");
+    let k: Rc<RefCell<int>> = Rc::new(RefCell::new(0));
+    let k1 = k.clone();
+    let k2 = k.clone();
+    let k3 = k.clone();
+
+    let mut cq = CloQ::new();
+
+    cq.push_fn(|&:| -> StopCondition {
+      let mut my_k = k1.try_borrow_mut().unwrap();
+      let k = my_k.deref_mut();
+      let r = if *k == 1 { Stop } else { KeepGoing };
+      *k = 1;
+      r
+    });
+
+    cq.push_fnmut(|&mut:| -> StopCondition {
+      let mut my_k = k2.try_borrow_mut().unwrap();
+      let k = my_k.deref_mut();
+      *k = 2;
+      Stop
+    });
+
+    cq.push_fnonce(|:| {
+      let mut my_k = k3.try_borrow_mut().unwrap();
+      let k = my_k.deref_mut();
+      *k = 3;
+    });
+
+    assert_eq!(*k.borrow(), 0);
+    println!("pop_and_run 1");
+    assert!(cq.try_pop_and_run());
+    println!("pop_and_run 2");
+    assert_eq!(*k.borrow(), 1);
+    assert!(cq.try_pop_and_run());
+    println!("pop_and_run 3");
+    assert_eq!(*k.borrow(), 2);
+    assert!(cq.try_pop_and_run());
+    println!("pop_and_run 4");
+    assert_eq!(*k.borrow(), 3);
+    assert!(cq.try_pop_and_run());
+    println!("pop_and_run 5");
+    assert_eq!(*k.borrow(), 1);
+    assert!(cq.try_pop_and_run());
+    println!("pop_and_run 6");
+    assert_eq!(*k.borrow(), 1);
+    assert!(!cq.try_pop_and_run());
+    println!("pop_and_run 7");
+  }
+
+  /*
+  #[test]
+  fn leave_a_closure_behind() {
+    println!("t2");
+    let k: Rc<int> = Rc::new(3);
+
+    let mut cq = CloQ::new();
+
+    cq.push_fn(|&:| -> StopCondition {
+      assert_eq!(*k, 3);
+      Stop
+    });
+  }
+  */
 }
