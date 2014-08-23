@@ -2,14 +2,10 @@
 #![feature(unboxed_closures)]
 #![deny(missing_doc)]
 
-#![allow(dead_code)]
-#![allow(unused_imports)]
-#![allow(unused_variable)]
-
-// TODO(cgaebel): Protect against integer overflow leading to heap corruption.
 // TODO(cgaebel): Security audit, remove as much unsafety as possible, etc.
 
-// Ideally we'd use allocators instead of the `alloc` library directly.
+// TODO(cgaebel): Ideally we'd use allocators instead of the `alloc` library
+// directly.
 extern crate alloc;
 extern crate core;
 
@@ -93,12 +89,14 @@ fn test_rounding() {
   assert_eq!(round_up_to_next(5, 4), 8);
 }
 
-/// A CloQ is a packed queue of unboxed closures. Any unboxed closure may be
-/// stored and later removed and called from this array, all without boxing.
+/// A CloQ is a packed queue of unboxed closures.
 ///
-/// The only allocations performed by this module are those required to keep
-/// the underlying buffer appropriately sized, and there is no dependency on
-/// libstd.
+/// Any unboxed closure may be and later removed and called from this array,
+/// with no boxing in the middle. A corallary to this is that the only
+/// allocations performed by this module are those required to keep the
+/// underlying buffer appropriately sized.
+///
+/// There is no dependency on libstd.
 #[unsafe_no_drop_flag]
 pub struct CloQ {
   buf: *mut u8, // raw data storage
@@ -383,7 +381,7 @@ impl CloQ {
   }
 
   /// Adds a serialized closure to the queue.
-  pub fn push<S: Serializer>(&mut self, s: S) {
+  fn push<S: Serializer>(&mut self, s: S) {
     unsafe {
       let code_ptr = s.code_ptr();
       let len      = round_up_to_next(s.required_len(), align());
@@ -408,6 +406,9 @@ impl CloQ {
 
   /// Tries to pop a closure off the queue and run it. Returns `false` iff the
   /// queue is empty and no closure can be run.
+  ///
+  /// If the closure returns `KeepGoing`, it will be pushed back onto the
+  /// end of the queue after it's run.
   pub fn try_pop_and_run(&mut self) -> bool {
     unsafe {
       let (call_result, len) = {
