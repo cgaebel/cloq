@@ -77,7 +77,7 @@ unsafe fn read_imm<T>(src: &mut [u8]) -> T {
 /// Used to ensure that all the closures are size-aligned properly, to keep
 /// all their internal pointers correctly aligned.
 fn round_up_to_next(unrounded: uint, target_alignment: uint) -> uint {
-  assert!(is_power_of_two(target_alignment));
+  assert!(num::is_power_of_two(target_alignment));
   (unrounded + target_alignment - 1) & !(target_alignment - 1)
 }
 
@@ -130,6 +130,9 @@ impl CloQ {
   /// This will correctly set `buf`, `msk`, and `fst`, without touching `len`.
   #[cold]
   unsafe fn grow_to(&mut self, target_size: uint) {
+    assert!(num::is_power_of_two(target_size));
+    assert!(target_size > self.cap());
+
     let needs_shuffle = self.wraps_around();
     let rhs_len       = self.cap() - self.fst;
 
@@ -143,7 +146,7 @@ impl CloQ {
       // with the new rhs. Therefore, use memcpy instead of memmove.
       copy_nonoverlapping_memory(
         self.buf.offset(self.fst as int),
-        self.buf.offset(old_fst as int),
+        self.buf.offset(old_fst as int) as *const u8,
         rhs_len);
     }
 
@@ -168,7 +171,10 @@ impl CloQ {
       let rhs_len = self.cap() - self.fst;
       let old_fst = mem::replace(&mut self.fst, target_size - rhs_len);
       // The old and new rhs may overlap!
-      copy_memory(self.buf.offset(self.fst), self.buf.offset(old_fst), rhs_len);
+      copy_memory(
+        self.buf.offset(self.fst as int),
+        self.buf.offset(old_fst as int) as *const u8,
+        rhs_len);
     }
     self.buf = reallocate(self.buf, target_size, align(), self.cap());
     self.msk = target_size - 1;
@@ -212,9 +218,9 @@ impl CloQ {
     debug_assert!(!self.wraps_around());
     let dist_to_shuffle = self.cap() - (self.fst + self.len);
     copy_memory(
-      self.buf.offset(self.fst + dist_to_shuffle),
-      self.buf.offset(self.fst),
-      len);
+      self.buf.offset((self.fst + dist_to_shuffle) as int),
+      self.buf.offset(self.fst as int) as *const u8,
+      self.len);
     self.fst += dist_to_shuffle;
   }
 
@@ -261,8 +267,8 @@ impl CloQ {
     if self.len == 0 { return None; }
 
     let raw_code_ptr = self.buf.offset(self.fst as int);
-    let raw_len_ptr  = code_ptr.offest(ptr_size() as int);
-    let raw_data_ptr = len_ptr.offset(len_size() as int);
+    let raw_len_ptr  = raw_code_ptr.offest(ptr_size() as int);
+    let raw_data_ptr = raw_len_ptr.offset(len_size() as int);
 
     let code_ptr_slice: raw::Slice<u8> =
       raw::Slice {
@@ -362,7 +368,7 @@ impl CloQ {
   pub fn push<S: Serializer>(&mut self, s: S) {
     unsafe {
       let code_ptr = s.code_ptr();
-      let len      = num::round_up_to_next(s.required_len(), align());
+      let len      = round_up_to_next(s.required_len(), align());
       s.serialize_data(self.reserve(code_ptr, len));
     }
   }
