@@ -469,6 +469,8 @@ impl Drop for CloQ {
   }
 }
 
+// Tests are split out into a seperate module so that we only depend on libstd
+// for testing.
 #[cfg(test)]
 mod test {
   use super::{CloQ,StopCondition,Stop,KeepGoing};
