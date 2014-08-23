@@ -13,6 +13,9 @@
 extern crate alloc;
 extern crate core;
 
+#[cfg(test)]
+extern crate test;
+
 use alloc::heap::{allocate,deallocate,reallocate};
 use core::intrinsics::{copy_memory,copy_nonoverlapping_memory};
 use core::mem;
@@ -472,7 +475,7 @@ impl Drop for CloQ {
 // Tests are split out into a seperate module so that we only depend on libstd
 // for testing.
 #[cfg(test)]
-mod test {
+mod my_test {
   use super::{CloQ,StopCondition,Stop,KeepGoing};
   use std::cell::RefCell;
   use std::rc::Rc;
@@ -530,6 +533,46 @@ mod test {
     cq.push_fn(|&:| -> StopCondition {
       assert_eq!(*k, 3);
       Stop
+    });
+  }
+}
+
+#[cfg(test)]
+mod bench {
+  use test::Bencher;
+  use super::{CloQ,StopCondition,Stop};
+
+  #[bench]
+  fn push_3(b: &mut Bencher) {
+    let mut cq = CloQ::new();
+    // Uhh this can grow without bound if the bencher wants it to. Oh well.
+    // Hasn't been a problem yet!
+    b.iter(|| {
+      cq.push_fn(|&:| -> StopCondition {
+        Stop
+      });
+
+      cq.push_fnmut(|&mut:| -> StopCondition {
+        Stop
+      });
+
+      cq.push_fnonce(|:| {
+      });
+    });
+  }
+
+  #[bench]
+  fn rotate_once(b: &mut Bencher) {
+    let mut cq = CloQ::new();
+
+    // add a few KB of closures to try and throw things out of cache.
+    for i in range(0i, 10*1024) {
+      cq.push_fn(|&:| -> StopCondition { Stop });
+    }
+
+    b.iter(|| {
+      cq.push_fn(|&:| -> StopCondition { Stop });
+      assert!(cq.try_pop_and_run());
     });
   }
 }
