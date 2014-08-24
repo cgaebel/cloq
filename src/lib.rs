@@ -548,7 +548,9 @@ impl CloQ {
   pub fn push_set(&mut self, mut s: CloSet) {
     unsafe {
       let dst: raw::Slice<u8> = mem::transmute(self.reserve_bytes(s.len));
-      copy_nonoverlapping_memory(dst.data as *mut u8, s.buf as *const u8, s.len);
+      let dst = dst.data as *mut   u8;
+      let src = s.buf    as *const u8;
+      copy_nonoverlapping_memory(dst, src, s.len);
       s.do_drops = false;
     }
   }
