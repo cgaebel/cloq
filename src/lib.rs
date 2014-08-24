@@ -79,10 +79,21 @@ unsafe fn read_imm<T>(src: &mut [u8]) -> T {
   t
 }
 
+unsafe fn raw_slice_of_buf<'a>(buf: *mut u8, len: uint) -> raw::Slice<u8> {
+  raw::Slice {
+    data: buf as *const u8,
+    len:  len,
+  }
+}
+
+unsafe fn slice_of_buf<'a>(buf: *mut u8, len: uint) -> &'a mut [u8] {
+  mem::transmute(raw_slice_of_buf(buf, len))
+}
+
 /// Used to ensure that all the closures are size-aligned properly, to keep
 /// all their internal pointers correctly aligned.
 fn round_up_to_next(unrounded: uint, target_alignment: uint) -> uint {
-  assert!(num::is_power_of_two(target_alignment));
+  debug_assert!(num::is_power_of_two(target_alignment));
   (unrounded + target_alignment - 1) & !(target_alignment - 1)
 }
 
@@ -96,7 +107,168 @@ fn test_rounding() {
   assert_eq!(round_up_to_next(5, 4), 8);
 }
 
-/// A CloQ is a packed queue of unboxed closures.
+/// The default bytesize of the buffers.
+static DEFAULT_SIZE: uint = 64;
+
+#[test]
+fn test_default_size() {
+  assert!(num::is_power_of_two(DEFAULT_SIZE));
+}
+
+/// A `CloSet` is a packed set of closures.
+///
+/// This can be used to keep some closuers in limbo before being added to a
+/// proper `CloQ`. They cannot be popped or run directly from the `CloSet`, but
+/// you can use the `CloSet` for temporary storage of closures you might want to
+/// add to a `CloQ` later.
+#[unsafe_no_drop_flag]
+pub struct CloSet {
+  buf: *mut u8,   // raw data storage
+  cap: uint,      // capacity
+  len: uint,      // the number of valid bytes in the buffer
+  do_drops: bool, // should we drop all the closures when we drop?
+}
+
+impl CloSet {
+  /// Creates a new `CloSet`.
+  pub fn new() -> CloSet {
+    unsafe {
+      CloSet {
+        buf: allocate(DEFAULT_SIZE, align()),
+        cap: DEFAULT_SIZE,
+        len: 0,
+        do_drops: true,
+      }
+    }
+  }
+
+  /// Grows the underlying buffer to some power-of-two new size, greater than
+  /// the current size.
+  ///
+  /// This will correctly set `buf` and `cap`, without touching `len`.
+  #[cold]
+  unsafe fn grow_to(&mut self, target_size: uint) {
+    debug_assert!(num::is_power_of_two(target_size));
+    debug_assert!(target_size > self.cap);
+
+    self.buf = reallocate(self.buf, target_size, align(), self.cap);
+    self.cap = target_size;
+  }
+
+  /// Grow the underlying buffer to fit at least `new_size` elements.
+  unsafe fn grow_to_fit(&mut self, new_size: uint) {
+    debug_assert!(new_size > self.len);
+    if new_size > self.cap {
+      self.grow_to(num::next_power_of_two(new_size))
+    }
+  }
+
+  unsafe fn reserve_bytes(&mut self, num_bytes: uint) -> &mut [u8] {
+    let old_len = self.len;
+    let new_len = old_len + num_bytes;
+    self.grow_to_fit(new_len);
+    self.len = new_len;
+    slice_of_buf(self.buf.offset(old_len as int), num_bytes)
+  }
+
+  /// Reserves space for closure data, and puts the code_ptr and len in the
+  /// space in front of it.
+  unsafe fn reserve(&mut self, code_ptr: *mut (), len: uint) -> &mut [u8] {
+    let dst = self.reserve_bytes(byte_len(len));
+
+    let (code_dst, rest    ) = dst.mut_split_at(ptr_size());
+    let (len_dst,  data_dst) = rest.mut_split_at(len_size());
+
+    serialize_imm(code_dst, code_ptr);
+    serialize_imm(len_dst,  len);
+
+    data_dst
+  }
+
+  fn iter(&self) -> CloSetIterator {
+    CloSetIterator {
+      buf: self.buf,
+      idx: 0,
+      len: self.len,
+    }
+  }
+
+  /// Adds a serialized closure to the queue.
+  fn push<S: Serializer>(&mut self, s: S) {
+    unsafe {
+      let code_ptr = s.code_ptr();
+      let len      = round_up_to_next(s.required_len(), align());
+      println!("pushing {} bytes", len);
+      s.serialize_data(self.reserve(code_ptr, len));
+    }
+  }
+
+  /// Pushes an unboxed `Fn` closure into the `CloSet`.
+  pub fn push_fn<F: Fn<(), StopCondition>>(&mut self, f: F) {
+    self.push(FnSerializer::new(f))
+  }
+
+  /// Pushes an unboxed `FnMut` closure into the `CloSet`.
+  pub fn push_fnmut<F: FnMut<(), StopCondition>>(&mut self, f: F) {
+    self.push(FnMutSerializer::new(f))
+  }
+
+  /// Pushes an unboxed `FnOnce` closure into the `CloSet`.
+  pub fn push_fnonce<F: FnOnce<(), ()>>(&mut self, f: F) {
+    self.push(FnOnceSerializer::new(f))
+  }
+}
+
+impl Drop for CloSet {
+  fn drop(&mut self) {
+    unsafe {
+      if self.buf.is_null() { return; }
+      println!("dropping");
+
+      if self.do_drops {
+        for (call_ptr, data) in self.iter() {
+          call(data.data as *mut (), call_ptr, true);
+        }
+      }
+
+      deallocate(self.buf, self.cap, align());
+    }
+  }
+}
+
+struct CloSetIterator {
+  buf: *mut u8,
+  idx: uint,
+  len: uint,
+}
+
+impl Iterator<(*mut (), raw::Slice<u8>)> for CloSetIterator {
+  fn next(&mut self) -> Option<(*mut (), raw::Slice<u8>)> {
+    unsafe {
+      let idx =
+        if self.idx == self.len {
+          return None;
+        } else {
+          self.idx
+        };
+
+      println!("iter.next idx={}", idx);
+
+      let raw_code_ptr = self.buf.offset(idx as int);
+      let raw_len_ptr  = raw_code_ptr.offset(ptr_size() as int);
+      let raw_data_ptr = raw_len_ptr.offset(len_size() as int);
+
+      let code_ptr: *mut () = read_imm(slice_of_buf(raw_code_ptr, ptr_size()));
+      let len:      uint    = read_imm(slice_of_buf(raw_len_ptr,  len_size()));
+
+      self.idx += byte_len(len);
+
+      Some((code_ptr, raw_slice_of_buf(raw_data_ptr, len)))
+    }
+  }
+}
+
+/// A `CloQ` is a packed queue of unboxed closures.
 ///
 /// Any unboxed closure may be and later removed and called from this array,
 /// with no boxing in the middle. A corallary to this is that the only
@@ -107,13 +279,10 @@ fn test_rounding() {
 #[unsafe_no_drop_flag]
 pub struct CloQ {
   buf: *mut u8, // raw data storage
-  msk: uint,   // capacity (power of two) - 1
-  len: uint,   // number of valid bytes in the buffer
-  fst: uint,   // index of the first element (next to pop)
+  msk: uint,    // capacity (power of two) - 1
+  len: uint,    // number of valid bytes in the buffer
+  fst: uint,    // index of the first element (next to pop)
 }
-
-/// The default bytesize of the buffer.
-static DEFAULT_SIZE: uint = 64;
 
 impl CloQ {
   /// Creates a new `CloQ`.
@@ -140,8 +309,8 @@ impl CloQ {
   /// This will correctly set `buf`, `msk`, and `fst`, without touching `len`.
   #[cold]
   unsafe fn grow_to(&mut self, target_size: uint) {
-    assert!(num::is_power_of_two(target_size));
-    assert!(target_size > self.cap());
+    debug_assert!(num::is_power_of_two(target_size));
+    debug_assert!(target_size > self.cap());
 
     let needs_shuffle = self.wraps_around();
     let rhs_len       = self.cap() - self.fst;
@@ -165,9 +334,9 @@ impl CloQ {
 
   /// Grow the underlying buffer to fit at least `new_size` elements.
   unsafe fn grow_to_fit(&mut self, new_size: uint) {
-    assert!(new_size > self.len);
+    debug_assert!(new_size > self.len);
     if new_size > self.cap() {
-      self.grow_to(num::next_power_of_two(new_size - 1))
+      self.grow_to(num::next_power_of_two(new_size))
     }
   }
 
@@ -197,7 +366,6 @@ impl CloQ {
     }
     self.buf = reallocate(self.buf, target_size, align(), self.cap());
     self.msk = target_size - 1;
-    // If it didn't wrap around, it won't now and we don't need to change `fst`.
   }
 
   /// Shrinks the underlying buffer to not be too big for `new_size` elements.
@@ -206,7 +374,7 @@ impl CloQ {
     // the buffer in half.
     assert!(new_size >= self.len);
     if new_size <= self.cap() >> 2 {
-      let want_to_shrink_to = num::next_power_of_two(new_size - 1) << 1;
+      let want_to_shrink_to = num::next_power_of_two(new_size) << 1;
 
       if want_to_shrink_to >= DEFAULT_SIZE {
         self.shrink_to(want_to_shrink_to)
@@ -255,16 +423,11 @@ impl CloQ {
     if !self.wraps_around() && self.fst + self.len + num_bytes > self.cap() {
       self.pack_rhs();
 
-      // slice this is the push that will cause the buffer to wrap, the new
-      // elements go at the very front.
-      let slice: raw::Slice<u8> =
-        raw::Slice {
-          data: self.buf as *const u8,
-          len:  num_bytes,
-        };
       self.len += num_bytes;
 
-      return mem::transmute(slice);
+      // slice this is the push that will cause the buffer to wrap, the new
+      // elements go at the very front.
+      return slice_of_buf(self.buf, num_bytes);
     }
 
     // At this point, we know two things:
@@ -274,13 +437,8 @@ impl CloQ {
 
     let raw_data_ptr = self.buf.offset(self.mask(self.fst + self.len) as int);
 
-    let slice: raw::Slice<u8> =
-      raw::Slice {
-        data: raw_data_ptr as *const u8,
-        len:  num_bytes,
-      };
     self.len += num_bytes;
-    mem::transmute(slice)
+    slice_of_buf(raw_data_ptr, num_bytes)
   }
 
   /// Get a pointer to the code_ptr and raw data of the closure at the head of
@@ -292,27 +450,10 @@ impl CloQ {
     let raw_len_ptr  = raw_code_ptr.offset(ptr_size() as int);
     let raw_data_ptr = raw_len_ptr.offset(len_size() as int);
 
-    let code_ptr_slice: raw::Slice<u8> =
-      raw::Slice {
-        data: raw_code_ptr as *const u8,
-        len:  ptr_size(),
-      };
-    let len_slice: raw::Slice<u8> =
-      raw::Slice {
-        data: raw_len_ptr as *const u8,
-        len:  len_size(),
-      };
+    let code_ptr: *mut () = read_imm(slice_of_buf(raw_code_ptr, ptr_size()));
+    let len:      uint    = read_imm(slice_of_buf(raw_len_ptr,  len_size()));
 
-    let code_ptr = read_imm::<*mut ()>(mem::transmute(code_ptr_slice));
-    let len  = read_imm::<uint>(mem::transmute(len_slice));
-
-    let data_slice: raw::Slice<u8> =
-      raw::Slice {
-        data: raw_data_ptr as *const u8,
-        len:  len,
-      };
-
-    Some((code_ptr, mem::transmute(data_slice)))
+    Some((code_ptr, slice_of_buf(raw_data_ptr, len)))
   }
 
   // The below two functions take the length of the closure at the head to avoid
@@ -324,7 +465,7 @@ impl CloQ {
   /// The only time you don't want to shrink the queue is when dropping, where
   /// we'll be deallocating the whole buffer at once anyhow at the end.
   unsafe fn pop_head(&mut self, len: uint, shrink: bool) {
-    assert!(self.len > 0);
+    debug_assert!(self.len > 0);
 
     let byte_len = byte_len(len);
     self.fst = self.mask(self.fst + byte_len);
@@ -339,7 +480,7 @@ impl CloQ {
   /// Move the closure that was at the front of the queue to the back of the
   /// queue. No resize will be triggered.
   unsafe fn recycle_head(&mut self, len: uint) {
-    assert!(self.len > 0);
+    debug_assert!(self.len > 0);
 
     let byte_len = byte_len(len);
 
@@ -360,15 +501,10 @@ impl CloQ {
   /// This will not remove the closure from the queue itself. If you want to do
   /// that, use `pop_head`.
   unsafe fn drop_head(&mut self) {
-    assert!(self.len > 0);
+    debug_assert!(self.len > 0);
     let raw_call_ptr = self.buf.offset(self.fst as int);
     let raw_data_ptr = self.buf.offset((self.fst + ptr_size() + len_size()) as int);
-    let call_ptr_slice: raw::Slice<u8> =
-      raw::Slice {
-        data: raw_call_ptr as *const u8,
-        len:  ptr_size(),
-      };
-    let code_ptr = read_imm::<*mut ()>(mem::transmute(call_ptr_slice));
+    let code_ptr: *mut () = read_imm(slice_of_buf(raw_call_ptr, ptr_size()));
     let data_ptr: *mut () = mem::transmute(raw_data_ptr);
     call(data_ptr, code_ptr, true);
   }
@@ -409,6 +545,24 @@ impl CloQ {
   /// Pushes an unboxed `FnOnce` closure onto the back of the queue.
   pub fn push_fnonce<F: FnOnce<(), ()>>(&mut self, f: F) {
     self.push(FnOnceSerializer::new(f))
+  }
+
+  /// Pushes all the closures ever added to a `CloSet` into the `CloQ`.
+  ///
+  /// The order in which closures were added to the `CloQ` will be the same
+  /// as the order they are added into the `CloSet`.
+  pub fn push_set(&mut self, mut s: CloSet) {
+    unsafe {
+      for (i, (call_ptr, data)) in s.iter().enumerate() {
+        println!("start {}", i);
+        self
+          .reserve(call_ptr, data.len)
+          .copy_memory(mem::transmute(data));
+        println!("end {}", i);
+      }
+
+      s.do_drops = false;
+    }
   }
 
   /// Tries to pop a closure off the queue and run it. Returns `false` iff the
@@ -476,7 +630,7 @@ impl Drop for CloQ {
 // for testing.
 #[cfg(test)]
 mod my_test {
-  use super::{CloQ,StopCondition,Stop,KeepGoing};
+  use super::{CloQ,CloSet,StopCondition,Stop,KeepGoing};
   use std::cell::RefCell;
   use std::rc::Rc;
 
@@ -534,6 +688,63 @@ mod my_test {
       assert_eq!(*k, 3);
       Stop
     });
+  }
+
+  #[test]
+  fn use_a_closet() {
+    let mut closet = CloSet::new();
+
+    let k: Rc<RefCell<int>> = Rc::new(RefCell::new(0));
+    let k1 = k.clone();
+    let k2 = k.clone();
+    let k3 = k.clone();
+    let k4 = k.clone();
+
+    closet.push_fn(|&:| -> StopCondition {
+      let mut my_k = k1.try_borrow_mut().unwrap();
+      let k = my_k.deref_mut();
+      let r = if *k == 1 { Stop } else { KeepGoing };
+      *k = 1;
+      r
+    });
+
+    closet.push_fnmut(|&mut:| -> StopCondition {
+      let mut my_k = k2.try_borrow_mut().unwrap();
+      let k = my_k.deref_mut();
+      *k = 2;
+      Stop
+    });
+
+    closet.push_fnonce(|:| {
+      let mut my_k = k3.try_borrow_mut().unwrap();
+      let k = my_k.deref_mut();
+      *k = 3;
+    });
+
+    let mut cq = CloQ::new();
+
+    cq.push_fnonce(|:| {
+      let mut my_k = k4.try_borrow_mut().unwrap();
+      let k = my_k.deref_mut();
+      *k = 10;
+    });
+
+    cq.push_set(closet);
+
+    assert_eq!(*k.borrow(), 0);
+    assert!(cq.try_pop_and_run());
+    assert_eq!(*k.borrow(), 10);
+    assert!(cq.try_pop_and_run());
+    assert_eq!(*k.borrow(), 1);
+    assert!(cq.try_pop_and_run());
+    assert_eq!(*k.borrow(), 2);
+    assert!(cq.try_pop_and_run());
+    assert_eq!(*k.borrow(), 3);
+    assert!(cq.try_pop_and_run());
+    assert_eq!(*k.borrow(), 1);
+    assert!(cq.try_pop_and_run());
+    assert_eq!(*k.borrow(), 1);
+    assert!(!cq.try_pop_and_run());
   }
 }
 
