@@ -547,8 +547,6 @@ impl CloQ {
   /// as the order they are added into the `CloSet`.
   pub fn push_set(&mut self, mut s: CloSet) {
     unsafe {
-      // TODO(cgaebel): It might be better to reserve memory in one batch, and
-      // then just do one giant memcpy.
       let dst: raw::Slice<u8> = mem::transmute(self.reserve_bytes(s.len));
       copy_nonoverlapping_memory(dst.data as *mut u8, s.buf as *const u8, s.len);
       s.do_drops = false;
