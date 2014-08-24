@@ -18,6 +18,7 @@ extern crate test;
 
 use alloc::heap::{allocate,deallocate,reallocate};
 use core::intrinsics::{copy_memory,copy_nonoverlapping_memory};
+use core::kinds::marker;
 use core::mem;
 use core::num;
 use core::ptr::RawPtr;
@@ -127,6 +128,7 @@ pub struct CloSet {
   cap: uint,      // capacity
   len: uint,      // the number of valid bytes in the buffer
   do_drops: bool, // should we drop all the closures when we drop?
+  nocopy: marker::NoCopy,
 }
 
 impl CloSet {
@@ -138,6 +140,7 @@ impl CloSet {
         cap: DEFAULT_SIZE,
         len: 0,
         do_drops: true,
+        nocopy: marker::NoCopy,
       }
     }
   }
@@ -278,6 +281,7 @@ pub struct CloQ {
   msk: uint,    // capacity (power of two) - 1
   len: uint,    // number of valid bytes in the buffer
   fst: uint,    // index of the first element (next to pop)
+  nocopy: marker::NoCopy,
 }
 
 impl CloQ {
@@ -289,6 +293,7 @@ impl CloQ {
         msk: DEFAULT_SIZE - 1,
         len: 0,
         fst: 0,
+        nocopy: marker::NoCopy,
       }
     }
   }
