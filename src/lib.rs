@@ -412,26 +412,24 @@ impl CloQ {
   unsafe fn reserve_bytes(&mut self, num_bytes: uint) -> &mut [u8] {
     let new_len = self.len + num_bytes;
     self.grow_to_fit(new_len);
-    // If we don't wrap around, but this push will force a wrap around, shuffle
-    // the elements right until they hit the right hand wall, then return a
-    // slice to the start. This ensures that we don't have a random hole that
-    // nothing fits into on the right.
-    if !self.wraps_around() && self.fst + self.len + num_bytes > self.cap() {
-      self.pack_rhs();
+    let raw_data_ptr =
+      // If we don't wrap around, but this push will force a wrap around, shuffle
+      // the elements right until they hit the right hand wall, then return a
+      // slice to the start. This ensures that we don't have a random hole that
+      // nothing fits into on the right.
+      if !self.wraps_around() && self.fst + self.len + num_bytes > self.cap() {
+        self.pack_rhs();
 
-      self.len += num_bytes;
-
-      // slice this is the push that will cause the buffer to wrap, the new
-      // elements go at the very front.
-      return slice_of_buf(self.buf, num_bytes);
-    }
-
-    // At this point, we know two things:
-    //
-    // 1) There's enough space in the queue for the new bytes (grow_to_fit).
-    // 2) There's no random unused bytes at the end of the buffer (pack_rhs).
-
-    let raw_data_ptr = self.buf.offset(self.mask(self.fst + self.len) as int);
+        // slice this is the push that will cause the buffer to wrap, the new
+        // elements go at the very front.
+        self.buf
+      } else {
+        // At this point, we know two things:
+        //
+        // 1) There's enough space in the queue for the new bytes (grow_to_fit).
+        // 2) There's no random unused bytes at the end of the buffer (pack_rhs).
+        self.buf.offset(self.mask(self.fst + self.len) as int)
+      };
 
     self.len += num_bytes;
     slice_of_buf(raw_data_ptr, num_bytes)
@@ -549,12 +547,10 @@ impl CloQ {
   /// as the order they are added into the `CloSet`.
   pub fn push_set(&mut self, mut s: CloSet) {
     unsafe {
-      for (i, (call_ptr, data)) in s.iter().enumerate() {
-        self
-          .reserve(call_ptr, data.len)
-          .copy_memory(mem::transmute(data));
-      }
-
+      // TODO(cgaebel): It might be better to reserve memory in one batch, and
+      // then just do one giant memcpy.
+      let dst: raw::Slice<u8> = mem::transmute(self.reserve_bytes(s.len));
+      copy_nonoverlapping_memory(dst.data as *mut u8, s.buf as *const u8, s.len);
       s.do_drops = false;
     }
   }
