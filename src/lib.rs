@@ -115,7 +115,7 @@ fn test_default_size() {
   assert!(num::is_power_of_two(DEFAULT_SIZE));
 }
 
-/// A `CloSet` is a packed set of closures.
+/// A `CloSet` is a packed set of unboxed closures.
 ///
 /// This can be used to keep some closuers in limbo before being added to a
 /// proper `CloQ`. They cannot be popped or run directly from the `CloSet`, but
