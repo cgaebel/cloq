@@ -198,7 +198,6 @@ impl CloSet {
     unsafe {
       let code_ptr = s.code_ptr();
       let len      = round_up_to_next(s.required_len(), align());
-      println!("pushing {} bytes", len);
       s.serialize_data(self.reserve(code_ptr, len));
     }
   }
@@ -223,7 +222,6 @@ impl Drop for CloSet {
   fn drop(&mut self) {
     unsafe {
       if self.buf.is_null() { return; }
-      println!("dropping");
 
       if self.do_drops {
         for (call_ptr, data) in self.iter() {
@@ -251,8 +249,6 @@ impl Iterator<(*mut (), raw::Slice<u8>)> for CloSetIterator {
         } else {
           self.idx
         };
-
-      println!("iter.next idx={}", idx);
 
       let raw_code_ptr = self.buf.offset(idx as int);
       let raw_len_ptr  = raw_code_ptr.offset(ptr_size() as int);
@@ -554,11 +550,9 @@ impl CloQ {
   pub fn push_set(&mut self, mut s: CloSet) {
     unsafe {
       for (i, (call_ptr, data)) in s.iter().enumerate() {
-        println!("start {}", i);
         self
           .reserve(call_ptr, data.len)
           .copy_memory(mem::transmute(data));
-        println!("end {}", i);
       }
 
       s.do_drops = false;
