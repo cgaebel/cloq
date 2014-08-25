@@ -498,7 +498,7 @@ impl CloQ {
     let raw_call_ptr = self.buf.offset(self.fst as int);
     let raw_data_ptr = self.buf.offset((self.fst + ptr_size() + len_size()) as int);
     let code_ptr: *mut () = read_imm(slice_of_buf(raw_call_ptr, ptr_size()));
-    let data_ptr: *mut () = mem::transmute(raw_data_ptr);
+    let data_ptr: *mut () = raw_data_ptr as *mut ();
     call(data_ptr, code_ptr, true);
   }
 
@@ -572,7 +572,7 @@ impl CloQ {
 
         let data_ptr: *mut () = {
           let data_slice: raw::Slice<u8> = mem::transmute(data_src);
-          mem::transmute(data_slice.data)
+          data_slice.data as *mut ()
         };
 
         (call(data_ptr, code_ptr, false), data_len)
