@@ -557,8 +557,8 @@ impl CloQ {
 
   /// Pushes all the closures ever added to a `CloSet` into the `CloQ`.
   ///
-  /// The order in which closures were added to the `CloQ` will be the same
-  /// as the order they are added into the `CloSet`.
+  /// The order in which closures are added into the `CloQ` will be the same
+  /// as the order they were added into the `CloSet`.
   pub fn push_set(&mut self, mut s: CloSet) {
     unsafe {
       let dst: raw::Slice<u8> = mem::transmute(self.reserve_bytes(s.len));
