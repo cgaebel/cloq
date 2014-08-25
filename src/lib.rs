@@ -1,5 +1,14 @@
 //! A queue of unboxed closures. CloQ for short.
+//!
+//! This module interacts badly with GC, thanks to all the structs being marked
+//! `NoSend`, and having a destructor. I had to add the dreaded
+//! `#[unsafe_destructor]` tag to everything. The implications of this are that
+//! you must never add a closure which closes over GC'd values to a CloQ or
+//! `CloSet`, and never build a GC'd `CloQ` or `CloSet`. As a rule of thumb,
+//! just don't use GC. It will void your warranty.
 #![feature(unboxed_closures)]
+#![feature(unsafe_destructor)]
+
 #![deny(missing_doc)]
 
 // TODO(cgaebel): Security audit, remove as much unsafety as possible, etc.
@@ -21,7 +30,8 @@ use core::intrinsics::{copy_memory,copy_nonoverlapping_memory};
 use core::kinds::marker;
 use core::mem;
 use core::num;
-use core::ptr::{RawPtr,read,write};
+use core::ptr;
+use core::ptr::RawPtr;
 use core::raw;
 
 use serialize::{Serializer,FnSerializer,FnMutSerializer,FnOnceSerializer,call};
@@ -65,13 +75,13 @@ fn align() -> uint {
 
 /// Copy some immediate value (ex. u8, u32, etc.) into a byte buffer.
 unsafe fn serialize_imm<T>(dst: &mut [u8], t: T) {
-  write(dst.as_mut_ptr() as *mut T, t)
+  ptr::write(dst.as_mut_ptr() as *mut T, t)
 }
 
 /// Copy an immediate value (ex. u8, u32, etc.) out of a byte buffer, and return
 /// it.
 unsafe fn read_imm<T>(src: &mut [u8]) -> T {
-  read(src.as_ptr() as *const T)
+  ptr::read(src.as_ptr() as *const T)
 }
 
 unsafe fn raw_slice_of_buf<'a>(buf: *mut u8, len: uint) -> raw::Slice<u8> {
@@ -123,6 +133,8 @@ pub struct CloSet {
   len: uint,      // the number of valid bytes in the buffer
   do_drops: bool, // should we drop all the closures when we drop?
   nocopy: marker::NoCopy,
+  nosend: marker::NoSend,
+  nosync: marker::NoSync,
 }
 
 impl CloSet {
@@ -135,6 +147,8 @@ impl CloSet {
         len: 0,
         do_drops: true,
         nocopy: marker::NoCopy,
+        nosend: marker::NoSend,
+        nosync: marker::NoSync,
       }
     }
   }
@@ -215,6 +229,7 @@ impl CloSet {
   }
 }
 
+#[unsafe_destructor]
 impl Drop for CloSet {
   fn drop(&mut self) {
     unsafe {
@@ -276,6 +291,8 @@ pub struct CloQ {
   len: uint,    // number of valid bytes in the buffer
   fst: uint,    // index of the first element (next to pop)
   nocopy: marker::NoCopy,
+  nosend: marker::NoSend,
+  nosync: marker::NoSync,
 }
 
 impl CloQ {
@@ -288,6 +305,8 @@ impl CloQ {
         len: 0,
         fst: 0,
         nocopy: marker::NoCopy,
+        nosend: marker::NoSend,
+        nosync: marker::NoSync,
       }
     }
   }
@@ -593,6 +612,7 @@ impl CloQ {
   }
 }
 
+#[unsafe_destructor]
 impl Drop for CloQ {
   fn drop(&mut self) {
     unsafe {
