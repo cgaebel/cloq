@@ -3,7 +3,7 @@
 //! This module interacts badly with GC, thanks to all the structs being marked
 //! `NoSend`, and having a destructor. I had to add the dreaded
 //! `#[unsafe_destructor]` tag to everything. The implications of this are that
-//! you must never add a closure which closes over GC'd values to a CloQ or
+//! you must never add a closure which closes over GC'd values to a `CloQ` or
 //! `CloSet`, and never build a GC'd `CloQ` or `CloSet`. As a rule of thumb,
 //! just don't use GC. It will void your warranty.
 #![feature(unboxed_closures)]
