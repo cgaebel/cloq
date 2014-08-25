@@ -132,7 +132,6 @@ pub struct CloSet {
   cap: uint,      // capacity
   len: uint,      // the number of valid bytes in the buffer
   do_drops: bool, // should we drop all the closures when we drop?
-  nocopy: marker::NoCopy,
   nosend: marker::NoSend,
   nosync: marker::NoSync,
 }
@@ -146,7 +145,6 @@ impl CloSet {
         cap: DEFAULT_SIZE,
         len: 0,
         do_drops: true,
-        nocopy: marker::NoCopy,
         nosend: marker::NoSend,
         nosync: marker::NoSync,
       }
@@ -290,7 +288,6 @@ pub struct CloQ {
   msk: uint,    // capacity (power of two) - 1
   len: uint,    // number of valid bytes in the buffer
   fst: uint,    // index of the first element (next to pop)
-  nocopy: marker::NoCopy,
   nosend: marker::NoSend,
   nosync: marker::NoSync,
 }
@@ -304,7 +301,6 @@ impl CloQ {
         msk: DEFAULT_SIZE - 1,
         len: 0,
         fst: 0,
-        nocopy: marker::NoCopy,
         nosend: marker::NoSend,
         nosync: marker::NoSync,
       }
