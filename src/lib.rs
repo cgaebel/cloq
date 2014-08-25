@@ -21,7 +21,7 @@ use core::intrinsics::{copy_memory,copy_nonoverlapping_memory};
 use core::kinds::marker;
 use core::mem;
 use core::num;
-use core::ptr::RawPtr;
+use core::ptr::{RawPtr,read,write};
 use core::raw;
 
 use serialize::{Serializer,FnSerializer,FnMutSerializer,FnOnceSerializer,call};
@@ -65,19 +65,13 @@ fn align() -> uint {
 
 /// Copy some immediate value (ex. u8, u32, etc.) into a byte buffer.
 unsafe fn serialize_imm<T>(dst: &mut [u8], t: T) {
-  let t_ptr: *const u8 = mem::transmute(&t);
-  let t_len: uint      = mem::size_of_val(&t);
-  copy_nonoverlapping_memory(dst.as_mut_ptr(), t_ptr, t_len);
+  write(dst.as_mut_ptr() as *mut T, t)
 }
 
 /// Copy an immediate value (ex. u8, u32, etc.) out of a byte buffer, and return
 /// it.
 unsafe fn read_imm<T>(src: &mut [u8]) -> T {
-  let t: T           = mem::uninitialized();
-  let t_ptr: *mut u8 = mem::transmute(&t);
-  let t_len: uint    = mem::size_of_val(&t);
-  copy_nonoverlapping_memory(t_ptr, src.as_mut_ptr() as *const u8, t_len);
-  t
+  read(src.as_ptr() as *const T)
 }
 
 unsafe fn raw_slice_of_buf<'a>(buf: *mut u8, len: uint) -> raw::Slice<u8> {
