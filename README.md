@@ -1,4 +1,4 @@
-cloq
+CloQ
 ====
 
 Have you ever wanted to express the idea of "I want to run this piece of code later" in rust?
