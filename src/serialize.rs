@@ -1,7 +1,9 @@
 //! Closure serialization.
 use core::mem;
+use core::ops::{Fn,FnMut,FnOnce};
 use core::ptr;
 use core::raw;
+use core::slice::MutableSlice;
 
 use super::{StopCondition,Stop,KeepGoing};
 
@@ -159,7 +161,6 @@ impl<F: FnMut<(), StopCondition>> Serializer for FnMutSerializer<F> {
   #[inline]
   unsafe fn serialize_data(self, dst: &mut [u8]) {
     let len = self.required_len();
-    assert!(len <= dst.len());
 
     let slice_of_self: raw::Slice<u8> =
       raw::Slice {
@@ -199,7 +200,6 @@ impl<F: FnOnce<(), ()>> Serializer for FnOnceSerializer<F> {
   #[inline]
   unsafe fn serialize_data(self, dst: &mut [u8]) {
     let len = self.required_len();
-    assert!(len <= dst.len());
 
     let slice_of_self: raw::Slice<u8> =
       raw::Slice {
@@ -212,27 +212,36 @@ impl<F: FnOnce<(), ()>> Serializer for FnOnceSerializer<F> {
   }
 }
 
-#[test]
-fn serialize_a_function() {
-  let n = 4u64;
+#[cfg(test)]
+mod test {
+  use super::{Serializer,FnSerializer,call};
+  use super::super::{Stop,KeepGoing};
+  use std::mem;
+  use std::raw;
+  use std::vec::Vec;
 
-  let f = |&:| {
-      if n == 1 { KeepGoing } else { Stop }
-    };
+  #[test]
+  fn serialize_a_function() {
+    let n = 4u64;
 
-  unsafe {
-    let s = FnSerializer::new(f);
+    let f = |&:| {
+        if n == 1 { KeepGoing } else { Stop }
+      };
 
-    let len = s.required_len();
-    let code_ptr = s.code_ptr();
+    unsafe {
+      let s = FnSerializer::new(f);
 
-    let mut buf = Vec::from_elem(len, 0u8);
+      let len = s.required_len();
+      let code_ptr = s.code_ptr();
 
-    s.serialize_data(buf.as_mut_slice());
-    let buf_slice: raw::Slice<u8> = mem::transmute(buf.as_mut_slice());
+      let mut buf = Vec::from_elem(len, 0u8);
 
-    let r = call(mem::transmute(buf_slice.data), code_ptr, false);
+      s.serialize_data(buf.as_mut_slice());
+      let buf_slice: raw::Slice<u8> = mem::transmute(buf.as_mut_slice());
 
-    assert_eq!(r, Stop);
+      let r = call(mem::transmute(buf_slice.data), code_ptr, false);
+
+      assert_eq!(r, Stop);
+    }
   }
 }

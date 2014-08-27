@@ -6,10 +6,11 @@
 //! you must never add a closure which closes over GC'd values to a `CloQ` or
 //! `CloSet`, and never build a GC'd `CloQ` or `CloSet`. As a rule of thumb,
 //! just don't use GC. It will void your warranty.
+#![feature(phase)]
 #![feature(unboxed_closures)]
 #![feature(unsafe_destructor)]
 #![license = "MIT"]
-
+#![no_std]
 #![deny(missing_doc)]
 
 // TODO(cgaebel): Security audit, remove as much unsafety as possible, etc.
@@ -23,18 +24,26 @@
 extern crate alloc;
 extern crate core;
 
-#[cfg(test)]
-extern crate test;
+#[cfg(test)] #[phase(plugin,link)] extern crate std;
+#[cfg(test)] extern crate native;
+#[cfg(test)] extern crate test;
 
 use alloc::heap::{allocate,deallocate,reallocate};
 use core::cmp;
+use core::collections::Collection;
+use core::fmt;
 use core::intrinsics::{copy_memory,copy_nonoverlapping_memory};
+use core::iter::Iterator;
 use core::kinds::marker;
 use core::mem;
 use core::num;
+use core::ops::{Fn,FnMut,FnOnce,Drop};
+use core::option::{Option,Some,None};
 use core::ptr;
 use core::ptr::RawPtr;
 use core::raw;
+use core::slice::{MutableSlice,ImmutableSlice};
+use core::str::StrSlice;
 
 use serialize::{Serializer,FnSerializer,FnMutSerializer,FnOnceSerializer,call};
 
@@ -43,12 +52,38 @@ pub mod serialize;
 /// A closure can either be removed from the queue, or be moved to the back.
 /// The closure itself is allowed to dictate this behavior, so it must return
 /// an element of this enum.
-#[deriving(PartialEq, Eq, Show)]
 pub enum StopCondition {
   /// Do not reschedule the closure at the end of the queue. Drop it.
   Stop,
   /// Reschedule the closure at the end of the queue. Do not drop it.
   KeepGoing,
+}
+
+// Can't derive the following since there's no std.
+
+impl cmp::PartialEq for StopCondition {
+  #[inline]
+  fn eq(&self, other: &StopCondition) -> bool {
+    match (*self, *other) {
+      (Stop, Stop) => true,
+      (KeepGoing, KeepGoing) => true,
+      _ => false,
+    }
+  }
+}
+
+impl cmp::Eq for StopCondition {}
+
+impl fmt::Show for StopCondition {
+  fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    let to_write =
+      match *self {
+        Stop => "Stop",
+        KeepGoing => "KeepGoing",
+      };
+
+    f.write(to_write.as_bytes())
+  }
 }
 
 /// The number of bytes that need to be allocated in the buffer for a closure
@@ -109,11 +144,11 @@ unsafe fn slice_of_buf<'a>(buf: *mut u8, len: uint) -> &'a mut [u8] {
 /// Used to ensure that all the closures are size-aligned properly, to keep
 /// all their internal pointers correctly aligned.
 fn round_up_to_next(unrounded: uint, target_alignment: uint) -> uint {
-  debug_assert!(num::is_power_of_two(target_alignment));
   (unrounded + target_alignment - 1) & !(target_alignment - 1)
 }
 
 #[test]
+#[cfg(test)]
 fn test_rounding() {
   assert_eq!(round_up_to_next(0, 4), 0);
   assert_eq!(round_up_to_next(1, 4), 4);
@@ -127,6 +162,7 @@ fn test_rounding() {
 static DEFAULT_SIZE: uint = 64;
 
 #[test]
+#[cfg(test)]
 fn test_default_size() {
   assert!(num::is_power_of_two(DEFAULT_SIZE));
 }
@@ -164,9 +200,6 @@ impl CloSet {
   /// This will correctly set `buf` and `cap`, without touching `len`.
   #[cold]
   unsafe fn grow_to(&mut self, target_size: uint) {
-    debug_assert!(num::is_power_of_two(target_size));
-    debug_assert!(target_size > self.cap);
-
     if self.cap == 0 {
       let new_cap = cmp::max(target_size, DEFAULT_SIZE);
       self.buf = allocate(new_cap, align());
@@ -180,7 +213,6 @@ impl CloSet {
   /// Grow the underlying buffer to fit at least `new_size` elements.
   #[inline]
   unsafe fn grow_to_fit(&mut self, new_size: uint) {
-    debug_assert!(new_size > self.len);
     if new_size > self.cap {
       self.grow_to(num::next_power_of_two(new_size))
     }
@@ -342,9 +374,6 @@ impl CloQ {
   /// This will correctly set `buf`, `msk`, and `fst`, without touching `len`.
   #[cold]
   unsafe fn grow_to(&mut self, target_size: uint) {
-    debug_assert!(num::is_power_of_two(target_size));
-    debug_assert!(target_size > self.cap());
-
     if self.buf.is_null() {
       let new_cap = cmp::max(target_size, DEFAULT_SIZE);
       self.buf = allocate(new_cap, align());
@@ -375,7 +404,6 @@ impl CloQ {
   /// Grow the underlying buffer to fit at least `new_size` elements.
   #[inline]
   unsafe fn grow_to_fit(&mut self, new_size: uint) {
-    debug_assert!(new_size > self.len);
     if self.msk == 0 || new_size > self.cap() {
       self.grow_to(num::next_power_of_two(new_size))
     }
@@ -414,7 +442,6 @@ impl CloQ {
   unsafe fn shrink_to_fit(&mut self, new_size: uint) {
     // Resize policy: If we're less than or equal to 1/4 full, cut the size of
     // the buffer in half.
-    assert!(new_size >= self.len);
     if new_size <= self.cap() >> 2 {
       let want_to_shrink_to = num::next_power_of_two(new_size) << 1;
 
@@ -446,7 +473,6 @@ impl CloQ {
   // If it does wrap around, then it is an invariant that this operation is
   // unnecessary, as it has already been performed.
   unsafe fn pack_rhs(&mut self) {
-    debug_assert!(!self.wraps_around());
     let dist_to_shuffle = self.cap() - (self.fst + self.len);
     copy_memory(
       self.buf.offset((self.fst + dist_to_shuffle) as int),
@@ -509,8 +535,6 @@ impl CloQ {
   /// we'll be deallocating the whole buffer at once anyhow at the end.
   #[inline]
   unsafe fn pop_head(&mut self, len: uint, shrink: bool) {
-    debug_assert!(self.len > 0);
-
     let byte_len = byte_len(len);
     self.fst = self.mask(self.fst + byte_len);
     self.len -= byte_len;
@@ -524,8 +548,6 @@ impl CloQ {
   /// Move the closure that was at the front of the queue to the back of the
   /// queue. No resize will be triggered.
   unsafe fn recycle_head(&mut self, len: uint) {
-    debug_assert!(self.len > 0);
-
     let byte_len = byte_len(len);
 
     if !self.wraps_around() && self.fst + self.len + byte_len > self.cap() {
@@ -545,7 +567,6 @@ impl CloQ {
   /// This will not remove the closure from the queue itself. If you want to do
   /// that, use `pop_head`.
   unsafe fn drop_head(&mut self) {
-    debug_assert!(self.len > 0);
     let raw_call_ptr = self.buf.offset(self.fst as int);
     let raw_data_ptr = self.buf.offset((self.fst + ptr_size() + len_size()) as int);
     let code_ptr: *mut () = read_imm(slice_of_buf(raw_call_ptr, ptr_size()));
@@ -703,7 +724,9 @@ impl Drop for CloQ {
 #[cfg(test)]
 mod my_test {
   use super::{CloQ,CloSet,StopCondition,Stop,KeepGoing};
+  use std::clone::Clone;
   use std::cell::RefCell;
+  use std::ops::DerefMut;
   use std::rc::Rc;
 
   #[test]
@@ -824,6 +847,7 @@ mod my_test {
 mod bench {
   use test::Bencher;
   use super::{CloQ,StopCondition,Stop};
+  use std::iter::range;
 
   #[bench]
   fn push_3(b: &mut Bencher) {
