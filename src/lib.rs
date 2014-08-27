@@ -27,6 +27,7 @@ extern crate core;
 extern crate test;
 
 use alloc::heap::{allocate,deallocate,reallocate};
+use core::cmp;
 use core::intrinsics::{copy_memory,copy_nonoverlapping_memory};
 use core::kinds::marker;
 use core::mem;
@@ -138,9 +139,9 @@ fn test_default_size() {
 /// add to a `CloQ` later.
 #[unsafe_no_drop_flag]
 pub struct CloSet {
-  buf: *mut u8,   // raw data storage
-  cap: uint,      // capacity
-  len: uint,      // the number of valid bytes in the buffer
+  buf:    *mut u8,   // raw data storage
+  cap:    uint,      // capacity
+  len:    uint,      // the number of valid bytes in the buffer
   nosend: marker::NoSend,
   nosync: marker::NoSync,
 }
@@ -148,14 +149,12 @@ pub struct CloSet {
 impl CloSet {
   /// Creates a new `CloSet`.
   pub fn new() -> CloSet {
-    unsafe {
-      CloSet {
-        buf: allocate(DEFAULT_SIZE, align()),
-        cap: DEFAULT_SIZE,
-        len: 0,
-        nosend: marker::NoSend,
-        nosync: marker::NoSync,
-      }
+    CloSet {
+      buf: 0 as *mut u8,
+      cap: 0,
+      len: 0,
+      nosend: marker::NoSend,
+      nosync: marker::NoSync,
     }
   }
 
@@ -168,8 +167,14 @@ impl CloSet {
     debug_assert!(num::is_power_of_two(target_size));
     debug_assert!(target_size > self.cap);
 
-    self.buf = reallocate(self.buf, target_size, align(), self.cap);
-    self.cap = target_size;
+    if self.cap == 0 {
+      let new_cap = cmp::max(target_size, DEFAULT_SIZE);
+      self.buf = allocate(new_cap, align());
+      self.cap = new_cap;
+    } else {
+      self.buf = reallocate(self.buf, target_size, align(), self.cap);
+      self.cap = target_size;
+    }
   }
 
   /// Grow the underlying buffer to fit at least `new_size` elements.
@@ -303,10 +308,10 @@ impl Iterator<(*mut (), raw::Slice<u8>)> for CloSetIterator {
 /// There is no dependency on libstd.
 #[unsafe_no_drop_flag]
 pub struct CloQ {
-  buf: *mut u8, // raw data storage
-  msk: uint,    // capacity (power of two) - 1
-  len: uint,    // number of valid bytes in the buffer
-  fst: uint,    // index of the first element (next to pop)
+  buf:    *mut u8, // raw data storage
+  msk:    uint,    // capacity (power of two) - 1
+  len:    uint,    // number of valid bytes in the buffer
+  fst:    uint,    // index of the first element (next to pop)
   nosend: marker::NoSend,
   nosync: marker::NoSync,
 }
@@ -314,15 +319,13 @@ pub struct CloQ {
 impl CloQ {
   /// Creates a new `CloQ`.
   pub fn new() -> CloQ {
-    unsafe {
-      CloQ {
-        buf: allocate(DEFAULT_SIZE, align()),
-        msk: DEFAULT_SIZE - 1,
-        len: 0,
-        fst: 0,
-        nosend: marker::NoSend,
-        nosync: marker::NoSync,
-      }
+    CloQ {
+      buf:    0 as *mut u8,
+      msk:    0,
+      len:    0,
+      fst:    0,
+      nosend: marker::NoSend,
+      nosync: marker::NoSync,
     }
   }
 
@@ -341,6 +344,13 @@ impl CloQ {
   unsafe fn grow_to(&mut self, target_size: uint) {
     debug_assert!(num::is_power_of_two(target_size));
     debug_assert!(target_size > self.cap());
+
+    if self.buf.is_null() {
+      let new_cap = cmp::max(target_size, DEFAULT_SIZE);
+      self.buf = allocate(new_cap, align());
+      self.msk = new_cap - 1;
+      return;
+    }
 
     let needs_shuffle = self.wraps_around();
     let rhs_len       = self.cap() - self.fst;
@@ -366,7 +376,7 @@ impl CloQ {
   #[inline]
   unsafe fn grow_to_fit(&mut self, new_size: uint) {
     debug_assert!(new_size > self.len);
-    if new_size > self.cap() {
+    if self.msk == 0 || new_size > self.cap() {
       self.grow_to(num::next_power_of_two(new_size))
     }
   }
