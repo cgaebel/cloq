@@ -8,6 +8,7 @@
 //! just don't use GC. It will void your warranty.
 #![feature(unboxed_closures)]
 #![feature(unsafe_destructor)]
+#![license = "MIT"]
 
 #![deny(missing_doc)]
 
