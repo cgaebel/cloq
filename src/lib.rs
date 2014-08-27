@@ -72,7 +72,8 @@ fn len_size() -> uint {
   mem::size_of::<uint>()
 }
 
-/// The preferred alignment of every data element in the CloQ.
+/// Keeps each closure ptr-aligned, so that we don't accidentally un-align
+/// any of the closure's internal pointers.
 #[inline(always)]
 fn align() -> uint {
   mem::align_of::<*const ()>()
