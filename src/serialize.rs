@@ -87,20 +87,24 @@ pub struct FnSerializer<F> {
 
 impl<F: Fn<(), StopCondition>> FnSerializer<F> {
   /// Creates a new FnSerializer, taking ownership of the `Fn`.
+  #[inline(always)]
   pub fn new(f: F) -> FnSerializer<F> {
     FnSerializer { f: f }
   }
 }
 
 impl<F: Fn<(), StopCondition>> Serializer for FnSerializer<F> {
+  #[inline(always)]
   fn required_len(&self) -> uint {
     mem::size_of::<F>()
   }
 
+  #[inline(always)]
   unsafe fn code_ptr(&self) -> *mut () {
     mem::transmute(my_call_fn::<F>)
   }
 
+  #[inline]
   unsafe fn serialize_data(self, dst: &mut [u8]) {
     let len = self.required_len();
 
@@ -120,6 +124,7 @@ impl<F: Fn<(), StopCondition>> Serializer for FnSerializer<F> {
 ///
 /// Set `just_drop` to true if you want to avoid the call, and just drop the
 /// closure.
+#[inline(always)]
 pub unsafe fn call(
     data: *mut (), code: *mut (), just_drop: bool) -> StopCondition {
   let f: fn(*mut (), bool) -> StopCondition =
@@ -134,20 +139,24 @@ pub struct FnMutSerializer<F> {
 
 impl<F: FnMut<(), StopCondition>> FnMutSerializer<F> {
   /// Creates a new `FnMutSerializer`, taking ownership of the `FnMut`.
+  #[inline(always)]
   pub fn new(f: F) -> FnMutSerializer<F> {
     FnMutSerializer { f: f }
   }
 }
 
 impl<F: FnMut<(), StopCondition>> Serializer for FnMutSerializer<F> {
+  #[inline(always)]
   fn required_len(&self) -> uint {
     mem::size_of::<F>()
   }
 
+  #[inline(always)]
   unsafe fn code_ptr(&self) -> *mut () {
     mem::transmute(my_call_mut::<F>)
   }
 
+  #[inline]
   unsafe fn serialize_data(self, dst: &mut [u8]) {
     let len = self.required_len();
     assert!(len <= dst.len());
@@ -170,20 +179,24 @@ pub struct FnOnceSerializer<F> {
 
 impl<F: FnOnce<(), ()>> FnOnceSerializer<F> {
   /// Creates a new `FnOnceSerializer`, taking ownership of the `FnMut`.
+  #[inline(always)]
   pub fn new(f: F) -> FnOnceSerializer<F> {
     FnOnceSerializer { f: f }
   }
 }
 
 impl<F: FnOnce<(), ()>> Serializer for FnOnceSerializer<F> {
+  #[inline(always)]
   fn required_len(&self) -> uint {
     mem::size_of::<F>()
   }
 
+  #[inline(always)]
   unsafe fn code_ptr(&self) -> *mut () {
     mem::transmute(my_call_once::<F>)
   }
 
+  #[inline]
   unsafe fn serialize_data(self, dst: &mut [u8]) {
     let len = self.required_len();
     assert!(len <= dst.len());

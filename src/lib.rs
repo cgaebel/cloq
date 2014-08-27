@@ -54,36 +54,43 @@ pub enum StopCondition {
 ///
 /// We need space for the code ptr, the length of the data buffer, and the
 /// buffer itself.
+#[inline(always)]
 fn byte_len(len: uint) -> uint {
   ptr_size() + len_size() + len
 }
 
 /// The size of a pointer on this architecture.
+#[inline(always)]
 fn ptr_size() -> uint {
   mem::size_of::<*const ()>()
 }
 
 /// The size of a buffer length on this architecture.
+#[inline(always)]
 fn len_size() -> uint {
   mem::size_of::<uint>()
 }
 
 /// The preferred alignment of every data element in the CloQ.
+#[inline(always)]
 fn align() -> uint {
   mem::align_of::<*const ()>()
 }
 
 /// Copy some immediate value (ex. u8, u32, etc.) into a byte buffer.
+#[inline(always)]
 unsafe fn serialize_imm<T>(dst: &mut [u8], t: T) {
   ptr::write(dst.as_mut_ptr() as *mut T, t)
 }
 
 /// Copy an immediate value (ex. u8, u32, etc.) out of a byte buffer, and return
 /// it.
+#[inline(always)]
 unsafe fn read_imm<T>(src: &mut [u8]) -> T {
   ptr::read(src.as_ptr() as *const T)
 }
 
+#[inline(always)]
 unsafe fn raw_slice_of_buf<'a>(buf: *mut u8, len: uint) -> raw::Slice<u8> {
   raw::Slice {
     data: buf as *const u8,
@@ -91,6 +98,7 @@ unsafe fn raw_slice_of_buf<'a>(buf: *mut u8, len: uint) -> raw::Slice<u8> {
   }
 }
 
+#[inline(always)]
 unsafe fn slice_of_buf<'a>(buf: *mut u8, len: uint) -> &'a mut [u8] {
   mem::transmute(raw_slice_of_buf(buf, len))
 }
@@ -131,7 +139,6 @@ pub struct CloSet {
   buf: *mut u8,   // raw data storage
   cap: uint,      // capacity
   len: uint,      // the number of valid bytes in the buffer
-  do_drops: bool, // should we drop all the closures when we drop?
   nosend: marker::NoSend,
   nosync: marker::NoSync,
 }
@@ -144,7 +151,6 @@ impl CloSet {
         buf: allocate(DEFAULT_SIZE, align()),
         cap: DEFAULT_SIZE,
         len: 0,
-        do_drops: true,
         nosend: marker::NoSend,
         nosync: marker::NoSync,
       }
@@ -165,6 +171,7 @@ impl CloSet {
   }
 
   /// Grow the underlying buffer to fit at least `new_size` elements.
+  #[inline]
   unsafe fn grow_to_fit(&mut self, new_size: uint) {
     debug_assert!(new_size > self.len);
     if new_size > self.cap {
@@ -172,6 +179,7 @@ impl CloSet {
     }
   }
 
+  #[inline]
   unsafe fn reserve_bytes(&mut self, num_bytes: uint) -> &mut [u8] {
     let old_len = self.len;
     let new_len = old_len + num_bytes;
@@ -182,6 +190,7 @@ impl CloSet {
 
   /// Reserves space for closure data, and puts the code_ptr and len in the
   /// space in front of it.
+  #[inline]
   unsafe fn reserve(&mut self, code_ptr: *mut (), len: uint) -> &mut [u8] {
     let dst = self.reserve_bytes(byte_len(len));
 
@@ -203,6 +212,7 @@ impl CloSet {
   }
 
   /// Adds a serialized closure to the queue.
+  #[inline]
   fn push<S: Serializer>(&mut self, s: S) {
     unsafe {
       let code_ptr = s.code_ptr();
@@ -212,18 +222,27 @@ impl CloSet {
   }
 
   /// Pushes an unboxed `Fn` closure into the `CloSet`.
+  #[inline]
   pub fn push_fn<F: Fn<(), StopCondition>>(&mut self, f: F) {
     self.push(FnSerializer::new(f))
   }
 
   /// Pushes an unboxed `FnMut` closure into the `CloSet`.
+  #[inline]
   pub fn push_fnmut<F: FnMut<(), StopCondition>>(&mut self, f: F) {
     self.push(FnMutSerializer::new(f))
   }
 
   /// Pushes an unboxed `FnOnce` closure into the `CloSet`.
+  #[inline]
   pub fn push_fnonce<F: FnOnce<(), ()>>(&mut self, f: F) {
     self.push(FnOnceSerializer::new(f))
+  }
+
+  /// Returns `true` iff the `CloSet` is empty.
+  #[inline(always)]
+  pub fn is_empty(&self) -> bool {
+    self.len == 0
   }
 }
 
@@ -233,10 +252,8 @@ impl Drop for CloSet {
     unsafe {
       if self.buf.is_null() { return; }
 
-      if self.do_drops {
-        for (call_ptr, data) in self.iter() {
-          call(data.data as *mut (), call_ptr, true);
-        }
+      for (call_ptr, data) in self.iter() {
+        call(data.data as *mut (), call_ptr, true);
       }
 
       deallocate(self.buf, self.cap, align());
@@ -309,6 +326,7 @@ impl CloQ {
 
   /// Returns true `iff` the data in the buffer falls off the rhs and wraps back
   /// around to the lhs.
+  #[inline(always)]
   fn wraps_around(&self) -> bool {
     self.fst + self.len > self.cap()
   }
@@ -343,6 +361,7 @@ impl CloQ {
   }
 
   /// Grow the underlying buffer to fit at least `new_size` elements.
+  #[inline]
   unsafe fn grow_to_fit(&mut self, new_size: uint) {
     debug_assert!(new_size > self.len);
     if new_size > self.cap() {
@@ -379,6 +398,7 @@ impl CloQ {
   }
 
   /// Shrinks the underlying buffer to not be too big for `new_size` elements.
+  #[inline]
   unsafe fn shrink_to_fit(&mut self, new_size: uint) {
     // Resize policy: If we're less than or equal to 1/4 full, cut the size of
     // the buffer in half.
@@ -393,12 +413,14 @@ impl CloQ {
   }
 
   /// The capacity of the underlying buffer.
+  #[inline(always)]
   fn cap(&self) -> uint {
     self.msk + 1
   }
 
   /// Take an index that may have walked off the end of an array and wrap it
   /// back into the buffer from the other side.
+  #[inline(always)]
   fn mask(&self, idx: uint) -> uint {
     idx & self.msk
   }
@@ -451,6 +473,7 @@ impl CloQ {
 
   /// Get a pointer to the code_ptr and raw data of the closure at the head of
   /// the queue. If the queue is empty, `None` is returned.
+  #[inline]
   unsafe fn view_head(&self) -> Option<(*mut (), &mut [u8])> {
     if self.len == 0 { return None; }
 
@@ -472,6 +495,7 @@ impl CloQ {
   ///
   /// The only time you don't want to shrink the queue is when dropping, where
   /// we'll be deallocating the whole buffer at once anyhow at the end.
+  #[inline]
   unsafe fn pop_head(&mut self, len: uint, shrink: bool) {
     debug_assert!(self.len > 0);
 
@@ -519,6 +543,7 @@ impl CloQ {
 
   /// Reserves space for closure data, and puts the code_ptr and len in the
   /// space in front of it.
+  #[inline]
   unsafe fn reserve(&mut self, code_ptr: *mut (), len: uint) -> &mut [u8] {
     let dst = self.reserve_bytes(byte_len(len));
 
@@ -532,6 +557,7 @@ impl CloQ {
   }
 
   /// Adds a serialized closure to the queue.
+  #[inline]
   fn push<S: Serializer>(&mut self, s: S) {
     unsafe {
       let code_ptr = s.code_ptr();
@@ -541,16 +567,19 @@ impl CloQ {
   }
 
   /// Pushes an unboxed `Fn` closure onto the back of the queue.
+  #[inline]
   pub fn push_fn<F: Fn<(), StopCondition>>(&mut self, f: F) {
     self.push(FnSerializer::new(f))
   }
 
   /// Pushes an unboxed `FnMut` closure onto the back of the queue.
+  #[inline]
   pub fn push_fnmut<F: FnMut<(), StopCondition>>(&mut self, f: F) {
     self.push(FnMutSerializer::new(f))
   }
 
   /// Pushes an unboxed `FnOnce` closure onto the back of the queue.
+  #[inline]
   pub fn push_fnonce<F: FnOnce<(), ()>>(&mut self, f: F) {
     self.push(FnOnceSerializer::new(f))
   }
@@ -559,13 +588,37 @@ impl CloQ {
   ///
   /// The order in which closures are added into the `CloQ` will be the same
   /// as the order they were added into the `CloSet`.
-  pub fn push_set(&mut self, mut s: CloSet) {
+  pub fn push_set(&mut self, s: CloSet) {
     unsafe {
       let dst: raw::Slice<u8> = mem::transmute(self.reserve_bytes(s.len));
       let dst = dst.data as *mut   u8;
       let src = s.buf    as *const u8;
       copy_nonoverlapping_memory(dst, src, s.len);
-      s.do_drops = false;
+      deallocate(s.buf, s.cap, align());
+      mem::forget(s);
+    }
+  }
+
+  /// Pushes all the closures ever added to a `CloQ` into another `CloQ`.
+  ///
+  /// The order in which the the closures are added to the current CloQ will be
+  /// the same as the order they were added to the original `CloQ`.
+  pub fn push_q(&mut self, q: CloQ) {
+    unsafe {
+      let dst: raw::Slice<u8> = mem::transmute(self.reserve_bytes(q.len));
+      let dst = dst.data as *mut u8;
+
+      if q.wraps_around() {
+        let rhs_len = q.cap() - q.fst;
+        let lhs_len = q.len - rhs_len;
+        copy_nonoverlapping_memory(dst, q.buf.offset(q.fst as int) as *const u8, rhs_len);
+        copy_nonoverlapping_memory(dst.offset(rhs_len as int), q.buf as *const u8, lhs_len);
+      } else {
+        copy_nonoverlapping_memory(dst, q.buf.offset(q.fst as int) as *const u8, q.len);
+      }
+
+      deallocate(q.buf, q.cap(), align());
+      mem::forget(q);
     }
   }
 
@@ -574,6 +627,7 @@ impl CloQ {
   ///
   /// If the closure returns `KeepGoing`, it will be pushed back onto the
   /// end of the queue after it's run.
+  #[inline]
   pub fn try_pop_and_run(&mut self) -> bool {
     unsafe {
       let (call_result, len) = {
@@ -602,7 +656,8 @@ impl CloQ {
     }
   }
 
-  /// Is the queue empty?
+  /// Returns `true` iff the `CloQ` is empty.
+  #[inline]
   pub fn is_empty(&self) -> bool {
     self.len == 0
   }
