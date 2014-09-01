@@ -24,6 +24,7 @@
 extern crate alloc;
 extern crate core;
 
+#[phase(plugin)] extern crate std;
 #[cfg(test)] #[phase(plugin,link)] extern crate std;
 #[cfg(test)] extern crate native;
 #[cfg(test)] extern crate test;
@@ -655,6 +656,23 @@ impl CloQ {
     }
   }
 
+  /// Pushes a closure in a `CloB` into the `CloQ`. This will take any closure
+  /// in the bucket and place it in the queue, emptying the bucket.
+  pub fn push_b(&mut self, b: &mut CloB) {
+    if b.is_empty() { return; }
+
+    unsafe {
+      let dst_slice = self.reserve(b.code, b.len);
+      let dst: raw::Slice<u8> = mem::transmute(dst_slice);
+      copy_nonoverlapping_memory(
+        dst.data as *mut   u8,
+          b.data as *const u8,
+          b.len);
+    }
+
+    b.mark_empty();
+  }
+
   /// Tries to pop a closure off the queue and run it. Returns `false` iff the
   /// queue is empty and no closure can be run.
   ///
@@ -719,14 +737,157 @@ impl Drop for CloQ {
   }
 }
 
+/// A `CloB` is a "closure bucket". It can hold either no closure, or one
+/// closure. It will never shrink its backing store for closure data. This is
+/// done for efficiency, but may or may not lead to memory leaks in your
+/// application.
+///
+/// The primary use case for a `CloB` is temporary storage when popping out of
+/// a `CloQ`, so that the closure that was just popped may push into the queue
+/// it was just popped out of.
+#[unsafe_no_drop_flag]
+pub struct CloB {
+  code: *mut (),
+  data: *mut u8,
+  len:  uint,
+  cap:  uint,
+}
+
+impl CloB {
+  /// Creates a new closure bucket (or `CloB`, for short).
+  pub fn new() -> CloB {
+    CloB {
+      code: 0 as *mut (),
+      data: 0 as *mut u8,
+      len:  0,
+      cap:  0,
+    }
+  }
+
+  /// Returns `true` iff the `CloB` is not currently holding a closure.
+  #[inline(always)]
+  pub fn is_empty(&self) -> bool {
+    self.code.is_null()
+  }
+
+  /// Returns `true` iff the `CloB` is currently holding a closure.
+  #[inline(always)]
+  pub fn is_full(&self) -> bool {
+    !self.is_empty()
+  }
+
+  #[inline]
+  fn mark_empty(&mut self) {
+    self.code = 0 as *mut ();
+  }
+
+  /// Note: Be very careful when using this. The data contents are thrown away.
+  /// If you want to keep them around for whatever reason, consider writing a
+  /// similar function that uses realloc.
+  #[cold]
+  unsafe fn grow_to(&mut self, len: uint) {
+    deallocate(self.data, self.cap, align());
+    self.data = allocate(len, align());
+    self.cap = len;
+  }
+
+  #[inline]
+  unsafe fn grow_to_fit(&mut self, len: uint) {
+    if len > self.cap {
+      self.grow_to(len);
+    }
+  }
+
+  #[inline]
+  fn fill(&mut self, code: *mut (), data: *const u8, len: uint) {
+    unsafe {
+      self.destroy_contents();
+      self.code = code;
+      self.grow_to_fit(len);
+      self.len  = len;
+      copy_nonoverlapping_memory(self.data, data, len);
+    }
+  }
+
+  /// Fills a `CloB` by popping the first closure out of a `CloQ` and placing it
+  /// in the bucket.
+  ///
+  /// If the bucket was filled when this function was called, the closure
+  /// filling it will be destroyed safely. The closure that was just popped out
+  /// of the `CloQ` will take its place.
+  #[inline]
+  pub fn fill_from(&mut self, cloq: &mut CloQ) {
+    unsafe {
+      let len =
+        match cloq.view_head() {
+          None => return,
+          Some((call_ptr, data_slice)) => {
+            let raw_slice: raw::Slice<u8> = mem::transmute(data_slice);
+            self.fill(call_ptr, raw_slice.data, raw_slice.len);
+            raw_slice.len
+          }
+        };
+
+      cloq.pop_head(len, true);
+    }
+  }
+
+  /// Attempts to run the closure in the `CloB`.
+  ///
+  /// If the bucket is empty, `None` will be returned.
+  /// Otherwise, `Some(the return value of the closure)` will be returned.
+  ///
+  /// If the closure returned `Stop`, the bucket will be empty at the end of
+  /// this function. If the closure returned `KeepGoing`, the bucket will be
+  /// full.
+  #[inline(always)]
+  pub fn try_pop_and_run(&mut self) -> Option<StopCondition> {
+    if self.is_empty() { return None; }
+
+    unsafe {
+      let r = call(self.data as *mut (), self.code as *mut (), false);
+      match r {
+        KeepGoing => {}
+        Stop => {
+          self.mark_empty();
+        }
+      }
+
+      Some(r)
+    }
+  }
+
+  #[inline]
+  fn destroy_contents(&mut self) {
+    if self.is_empty() { return; }
+
+    unsafe {
+      call(self.data as *mut (), self.code as *mut (), true);
+      self.mark_empty();
+    }
+  }
+}
+
+impl Drop for CloB {
+  fn drop(&mut self) {
+    if self.data.is_null() { return; }
+    unsafe {
+      self.destroy_contents();
+      deallocate(self.data, self.cap, align());
+      self.data = 0 as *mut u8;
+    }
+  }
+}
+
 // Tests are split out into a seperate module so that we only depend on libstd
 // for testing.
 #[cfg(test)]
 mod my_test {
-  use super::{CloQ,CloSet,StopCondition,Stop,KeepGoing};
+  use super::{CloQ,CloSet,CloB,StopCondition,Stop,KeepGoing};
   use std::clone::Clone;
   use std::cell::RefCell;
   use std::ops::DerefMut;
+  use std::option::Some;
   use std::rc::Rc;
 
   #[test]
@@ -840,6 +1001,48 @@ mod my_test {
     assert!(cq.try_pop_and_run());
     assert_eq!(*k.borrow(), 1);
     assert!(!cq.try_pop_and_run());
+  }
+
+  #[test]
+  fn something_that_looks_like_a_scheduler() {
+    let cloq = Rc::new(RefCell::new(CloQ::new()));
+    let cloq1 = cloq.clone();
+
+    let was_run = Rc::new(RefCell::new(false));
+    let was_run1 = was_run.clone();
+
+    {
+      let mut my_cloq = cloq.try_borrow_mut().unwrap();
+      my_cloq.push_fnonce(|:| {
+        let mut my_cloq = cloq1.try_borrow_mut().unwrap();
+        my_cloq.deref_mut().push_fnonce(|:| {
+          let mut my_was_run = was_run1.try_borrow_mut().unwrap();
+          *my_was_run.deref_mut() = true;
+        });
+      });
+    }
+
+    let mut clob = CloB::new();
+    assert!(clob.is_empty());
+
+    let mut loops = 0u;
+
+    loop {
+      loops += 1;
+
+      {
+        let mut my_cloq = cloq.try_borrow_mut().unwrap();
+        if my_cloq.is_empty() { break; }
+        clob.fill_from(my_cloq.deref_mut());
+      }
+
+      assert!(clob.is_full());
+      assert_eq!(clob.try_pop_and_run(), Some(Stop));
+      assert!(clob.is_empty());
+    }
+
+    assert_eq!(loops, 3);
+    assert!(*was_run.borrow_mut() == true);
   }
 }
 
