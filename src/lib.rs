@@ -13,8 +13,6 @@
 #![no_std]
 #![deny(missing_doc)]
 
-// TODO(cgaebel): Security audit, remove as much unsafety as possible, etc.
-
 // TODO(cgaebel): This does a LOT of memmove instead of memcpy out of necessity,
 // so that we can use realloc. It might be better to just suck it up and
 // malloc the new buffer, memcpy, then free the old buffer.
@@ -276,6 +274,25 @@ impl CloSet {
   #[inline]
   pub fn push_fnonce<F: FnOnce<(), ()>>(&mut self, f: F) {
     self.push(FnOnceSerializer::new(f))
+  }
+
+  /// Pushes a closure in a `CloB` into the `CloSet`. This will take any closure
+  /// in the bucket and place it in the set, emptying the bucket.
+  ///
+  /// Pushing an empty bucket is a no-op.
+  pub fn push_b(&mut self, b: &mut CloB) {
+    if b.is_empty() { return; }
+
+    unsafe {
+      let dst_slice = self.reserve(b.code, b.len);
+      let dst: raw::Slice<u8> = mem::transmute(dst_slice);
+      copy_nonoverlapping_memory(
+        dst.data as *mut   u8,
+          b.data as *const u8,
+          b.len);
+    }
+
+    b.mark_empty();
   }
 
   /// Returns `true` iff the `CloSet` is empty.
