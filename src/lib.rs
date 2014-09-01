@@ -24,7 +24,6 @@
 extern crate alloc;
 extern crate core;
 
-#[phase(plugin)] extern crate std;
 #[cfg(test)] #[phase(plugin,link)] extern crate std;
 #[cfg(test)] extern crate native;
 #[cfg(test)] extern crate test;
@@ -658,6 +657,8 @@ impl CloQ {
 
   /// Pushes a closure in a `CloB` into the `CloQ`. This will take any closure
   /// in the bucket and place it in the queue, emptying the bucket.
+  ///
+  /// Pushing an empty bucket is a no-op.
   pub fn push_b(&mut self, b: &mut CloB) {
     if b.is_empty() { return; }
 
@@ -738,13 +739,14 @@ impl Drop for CloQ {
 }
 
 /// A `CloB` is a "closure bucket". It can hold either no closure, or one
-/// closure. It will never shrink its backing store for closure data. This is
-/// done for efficiency, but may or may not lead to memory leaks in your
-/// application.
+/// closure.
+///
+/// A `CloB` will never shrink its backing store for closure data. This is done
+/// for efficiency, but may or may not lead to memory leaks in your application.
 ///
 /// The primary use case for a `CloB` is temporary storage when popping out of
 /// a `CloQ`, so that the closure that was just popped may push into the queue
-/// it was just popped out of.
+/// it was just popped out of, as it runs.
 #[unsafe_no_drop_flag]
 pub struct CloB {
   code: *mut (),
