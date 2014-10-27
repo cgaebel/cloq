@@ -3,7 +3,7 @@ use core::mem;
 use core::ops::{Fn,FnMut,FnOnce};
 use core::ptr;
 use core::raw;
-use core::slice::MutableSlice;
+use core::slice::bytes::copy_memory;
 
 use super::{StopCondition,Stop,KeepGoing};
 
@@ -116,7 +116,7 @@ impl<F: Fn<(), StopCondition>> Serializer for FnSerializer<F> {
         len:  len,
       };
 
-     dst.copy_memory(mem::transmute(slice_of_self));
+     copy_memory(dst, mem::transmute(slice_of_self));
      mem::forget(self.f);
   }
 }
@@ -168,7 +168,7 @@ impl<F: FnMut<(), StopCondition>> Serializer for FnMutSerializer<F> {
         len:  len,
       };
 
-     dst.copy_memory(mem::transmute(slice_of_self));
+     copy_memory(dst, mem::transmute(slice_of_self));
      mem::forget(self.f);
   }
 }
@@ -207,7 +207,7 @@ impl<F: FnOnce<(), ()>> Serializer for FnOnceSerializer<F> {
         len:  len,
       };
 
-     dst.copy_memory(mem::transmute(slice_of_self));
+     copy_memory(dst, mem::transmute(slice_of_self));
      mem::forget(self.f);
   }
 }
@@ -216,15 +216,23 @@ impl<F: FnOnce<(), ()>> Serializer for FnOnceSerializer<F> {
 mod test {
   use super::{Serializer,FnSerializer,call};
   use super::super::{Stop,KeepGoing};
+  use std::cell::RefCell;
+  use std::clone::Clone;
   use std::mem;
   use std::raw;
+  use std::rc::Rc;
   use std::vec::Vec;
 
   #[test]
   fn serialize_a_function() {
     let n = 4u64;
 
+    let c0 = Rc::new(RefCell::new(0u));
+    let c1 = c0.clone();
+
     let f = |&:| {
+        let mut c = c1.borrow_mut();
+        *c += 1;
         if n == 1 { KeepGoing } else { Stop }
       };
 
@@ -242,6 +250,7 @@ mod test {
       let r = call(mem::transmute(buf_slice.data), code_ptr, false);
 
       assert_eq!(r, Stop);
+      assert_eq!(*c0.borrow(), 1);
     }
   }
 }

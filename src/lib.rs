@@ -231,8 +231,8 @@ impl CloSet {
   unsafe fn reserve(&mut self, code_ptr: *mut (), len: uint) -> &mut [u8] {
     let dst = self.reserve_bytes(byte_len(len));
 
-    let (code_dst, rest    ) = dst.mut_split_at(ptr_size());
-    let (len_dst,  data_dst) = rest.mut_split_at(len_size());
+    let (code_dst, rest    ) = dst.split_at_mut(ptr_size());
+    let (len_dst,  data_dst) = rest.split_at_mut(len_size());
 
     serialize_imm(code_dst, code_ptr);
     serialize_imm(len_dst,  len);
@@ -597,8 +597,8 @@ impl CloQ {
   unsafe fn reserve(&mut self, code_ptr: *mut (), len: uint) -> &mut [u8] {
     let dst = self.reserve_bytes(byte_len(len));
 
-    let (code_dst, rest    ) = dst.mut_split_at(ptr_size());
-    let (len_dst,  data_dst) = rest.mut_split_at(len_size());
+    let (code_dst, rest    ) = dst.split_at_mut(ptr_size());
+    let (len_dst,  data_dst) = rest.split_at_mut(len_size());
 
     serialize_imm(code_dst, code_ptr);
     serialize_imm(len_dst,  len);
@@ -1095,7 +1095,7 @@ mod bench {
     let mut cq = CloQ::new();
 
     // add a few KB of closures to try and throw things out of cache.
-    for i in range(0i, 10*1024) {
+    for _ in range(0i, 10*1024) {
       cq.push_fn(|&:| -> StopCondition { Stop });
     }
 
